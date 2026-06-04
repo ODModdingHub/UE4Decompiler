@@ -1,0 +1,372 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\UE4Decompiler\\UE4Decompiler.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj": {
+      "version": "1.2.1",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj",
+        "projectName": "CUE4Parse-Conversion",
+        "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj",
+        "packagesPath": "C:\\Users\\drych\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\drych\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "framework": "net8.0",
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj": {
+                "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.300"
+      },
+      "frameworks": {
+        "net8.0": {
+          "framework": "net8.0",
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "AssetRipper.TextureDecoder": {
+              "target": "Package",
+              "version": "[2.2.1, )"
+            },
+            "SharpGLTF.Core": {
+              "target": "Package",
+              "version": "[1.0.0-alpha0023, )"
+            },
+            "SharpGLTF.Toolkit": {
+              "target": "Package",
+              "version": "[1.0.0-alpha0023, )"
+            },
+            "SixLabors.ImageSharp": {
+              "target": "Package",
+              "version": "[3.1.12, )"
+            },
+            "SkiaSharp": {
+              "target": "Package",
+              "version": "[2.88.9, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            }
+          ],
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.300/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj": {
+      "version": "1.2.2",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj",
+        "projectName": "CUE4Parse",
+        "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj",
+        "packagesPath": "C:\\Users\\drych\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\drych\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "framework": "net8.0",
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.300"
+      },
+      "frameworks": {
+        "net8.0": {
+          "framework": "net8.0",
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Blake3": {
+              "target": "Package",
+              "version": "[2.0.0, )"
+            },
+            "BouncyCastle.Cryptography": {
+              "target": "Package",
+              "version": "[2.6.2, )"
+            },
+            "FixedMathSharp": {
+              "target": "Package",
+              "version": "[1.3.3, )"
+            },
+            "Fmod5Sharp": {
+              "target": "Package",
+              "version": "[3.1.0, )"
+            },
+            "GenericReader": {
+              "target": "Package",
+              "version": "[2.3.0, )"
+            },
+            "Infrablack.UE4Config": {
+              "target": "Package",
+              "version": "[0.7.2.97, )"
+            },
+            "K4os.Compression.LZ4.Streams": {
+              "target": "Package",
+              "version": "[1.3.8, )"
+            },
+            "LZMA-SDK": {
+              "target": "Package",
+              "version": "[22.1.1, )"
+            },
+            "Newtonsoft.Json": {
+              "target": "Package",
+              "version": "[13.0.4, )"
+            },
+            "OffiUtils": {
+              "target": "Package",
+              "version": "[3.0.0, )"
+            },
+            "Oodle.NET": {
+              "target": "Package",
+              "version": "[2.2.0, )"
+            },
+            "Serilog": {
+              "target": "Package",
+              "version": "[4.3.0, )"
+            },
+            "Serilog.Sinks.Console": {
+              "target": "Package",
+              "version": "[6.1.1, )"
+            },
+            "SubstreamSharp": {
+              "target": "Package",
+              "version": "[1.0.3, )"
+            },
+            "System.IO.Hashing": {
+              "target": "Package",
+              "version": "[10.0.6, )"
+            },
+            "VGAudio": {
+              "target": "Package",
+              "version": "[2.2.1, )"
+            },
+            "Zlib-ng.NET": {
+              "target": "Package",
+              "version": "[1.2.0, )"
+            },
+            "ZstdSharp.Port": {
+              "target": "Package",
+              "version": "[0.8.6, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            }
+          ],
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.300/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\UE4Decompiler\\UE4Decompiler.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\UE4Decompiler\\UE4Decompiler.csproj",
+        "projectName": "UE4Decompiler",
+        "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\UE4Decompiler\\UE4Decompiler.csproj",
+        "packagesPath": "C:\\Users\\drych\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\UE4Decompiler\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\drych\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "framework": "net8.0",
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj": {
+                "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj"
+              },
+              "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj": {
+                "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.300"
+      },
+      "frameworks": {
+        "net8.0": {
+          "framework": "net8.0",
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "CommandLineParser": {
+              "target": "Package",
+              "version": "[2.9.1, )"
+            },
+            "Newtonsoft.Json": {
+              "target": "Package",
+              "version": "[13.0.4, )"
+            },
+            "Serilog": {
+              "target": "Package",
+              "version": "[4.3.0, )"
+            },
+            "Serilog.Sinks.Console": {
+              "target": "Package",
+              "version": "[6.1.1, )"
+            },
+            "Spectre.Console": {
+              "target": "Package",
+              "version": "[0.49.1, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Host.win-x64",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.27, 8.0.27]"
+            }
+          ],
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.300/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
