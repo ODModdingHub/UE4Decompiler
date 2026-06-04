@@ -1,5 +1,6 @@
 using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Assets;
+using CUE4Parse_Conversion.Meshes;
 using CUE4Parse.UE4.Objects.UObject;
 using CUE4Parse.Utils;
 using Serilog;
@@ -138,10 +139,54 @@ public sealed class ContentWriter
         // (textures/meshes/sounds need bulk inlining — handled by their reconstructors, not here yet).
         // Otherwise fall back to a structurally-valid placeholder header so the project still opens.
         var packageName = "/Game/" + relative.Replace('\\', '/');
-        if (!TryWriteUncooked(asset, outputAsset, entry))
+        if (asset.IsMap)
+        {
+            // Maps must NOT go through UncookedPackageWriter: that re-serializes the cooked import table
+            // (incl. plugin refs like /CustomMapTools/) which the editor can't resolve -> null-deref crash on load.
+            // Route through the filtered PlaceActors path (requires --template + --cube); otherwise write an
+            // empty-but-openable placeholder header.
+            if (!TryWritePlacedMap(asset, outputAsset, packageName, entry))
+                _writer.WriteUAssetHeader(outputAsset, _opts.Game, packageName);
+        }
+        else if (asset.PrimaryType is "StaticMesh" && TryWriteRealMesh(asset, outputAsset, packageName, entry))
+        {
+            // real-geometry editor mesh written (cube-clone + appended FRawMesh); skip the cooked uncooked write.
+        }
+        else if (!TryWriteUncooked(asset, outputAsset, entry))
             _writer.WriteUAssetHeader(outputAsset, _opts.Game, packageName);
 
         return entry;
+    }
+
+    /// <summary>When --cube is configured, emit a real-geometry editor StaticMesh (engine-cube clone with the
+    /// source's converted FRawMesh appended + re-pointed) at the asset's /Game path, so placed maps render true
+    /// geometry. Returns false if no cube is set or the mesh can't be converted (caller falls back).</summary>
+    private bool TryWriteRealMesh(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(_opts.CubePath)) return false;
+        if (asset.Package is not Package pkg) return false;
+        try
+        {
+            CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh? sm = null;
+            for (var i = 0; i < pkg.ExportMap.Length && sm is null; i++)
+            {
+                if (pkg.ExportMap[i].ClassName != "StaticMesh") continue;
+                try { sm = pkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh; }
+                catch { /* not loadable */ }
+            }
+            if (sm is null || !sm.TryConvert(out var cm) || cm.LODs.Count == 0) return false;
+
+            var blob = MeshWriter.BuildFRawMesh(cm.LODs[0]);
+            BlueprintGraphBuilder.CloneMesh(_opts.CubePath!, outputAsset, sm.Name, packageName, blob);
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "real-geometry editor mesh"
+                                                          : entry.Note + "; real-geometry editor mesh";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Real-mesh write failed for {Path}; falling back", asset.File.Path);
+            return false;
+        }
     }
 
     /// <summary>Write a genuine uncooked .uasset by relocating the real payloads. Returns false if ineligible.</summary>
@@ -167,6 +212,41 @@ public sealed class ContentWriter
         catch (Exception ex)
         {
             Log.Warning(ex, "Uncooked write failed for {Path}; using placeholder header", asset.File.Path);
+            return false;
+        }
+    }
+
+    /// <summary>Emit an editor-loadable .umap by placing the cooked map's reliably-loadable actors (filtered to
+    /// native /Script classes + cube-placeholder meshes) onto the empty editor template. Returns false when no
+    /// template/cube is configured, so the caller falls back to an empty placeholder header.</summary>
+    private bool TryWritePlacedMap(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        if (asset.Package is not Package) return false;
+        if (string.IsNullOrWhiteSpace(_opts.MapTemplate) || string.IsNullOrWhiteSpace(_opts.CubePath))
+        {
+            Log.Warning("Map {Path}: --template + --cube not set; writing empty placeholder map (no actors)", asset.File.Path);
+            return false;
+        }
+        try
+        {
+            var parts = _provider.SavePackage(asset.File.Path);
+            var head = parts.FirstOrDefault(p => p.Key.EndsWith(".uasset") || p.Key.EndsWith(".umap")).Value
+                       ?? parts.Values.First();
+            var uexp = parts.FirstOrDefault(p => p.Key.EndsWith(".uexp")).Value;
+            var combined = uexp is null ? head : Concat(head, uexp);
+
+            var targetShort = Path.GetFileNameWithoutExtension(outputAsset);
+            BlueprintGraphBuilder.PlaceActorsCore(combined, Path.GetFileNameWithoutExtension(asset.File.Path),
+                File.ReadAllBytes(_opts.MapTemplate!), outputAsset, targetShort, packageName,
+                _opts.CubePath, _opts.ContentRoot);
+
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "placed-actor editor map"
+                                                          : entry.Note + "; placed-actor editor map";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Placed-map write failed for {Path}; using empty placeholder", asset.File.Path);
             return false;
         }
     }

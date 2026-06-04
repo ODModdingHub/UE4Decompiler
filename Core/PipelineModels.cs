@@ -59,5 +59,11 @@ public sealed class DecompileOptions
     public bool Verbose { get; init; }
     public string ProjectName { get; init; } = "DecompiledProject";
 
+    /// <summary>Empty editor map (.umap) used as the reskin base for in-pipeline actor placement. When set,
+    /// maps are emitted via the filtered PlaceActors path instead of the crashing cooked uncooked-map write.</summary>
+    public string? MapTemplate { get; init; }
+    /// <summary>Engine Cube StaticMesh path; cloned as a loadable placeholder for each mesh referenced by a placed map.</summary>
+    public string? CubePath { get; init; }
+
     public string ContentRoot => Path.Combine(OutputRoot, "Content");
 }

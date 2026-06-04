@@ -114,6 +114,9 @@ public static class Program
         [Option("template", HelpText = "Loadable editor BP template path for --reconstruct.")]
         public string? Template { get; set; }
 
+        [Option("gen-mesh-all", HelpText = "Generate real meshes for every loadable StaticMesh.")]
+public bool GenMeshAll { get; set; }
+
         [Option("call-message", Default = "reconstructed", HelpText = "PrintString message for --inject-call.")]
         public string? CallMessage { get; set; }
 
@@ -254,6 +257,89 @@ public static class Program
                 foreach (var h in hits) Console.WriteLine("  " + h);
                 return 0;
             }
+            if (o.GenMeshAll)
+{
+    if (string.IsNullOrWhiteSpace(o.Cube))
+    {
+        Log.Error("--gen-mesh-all needs --cube");
+        return 1;
+    }
+
+    Directory.CreateDirectory(Path.GetFullPath(o.Output));
+
+    var keys = extractor.Provider.Files.Keys
+        .Where(k => k.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase))
+        .OrderBy(k => k)
+        .ToList();
+
+    var made = 0;
+    var skipped = 0;
+
+    foreach (var key in keys)
+    {
+        try
+        {
+            var meshPkg = (CUE4Parse.UE4.Assets.Package)extractor.Provider.LoadPackage(key);
+
+            CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh? sm = null;
+
+            for (var i = 0; i < meshPkg.ExportMap.Length && sm == null; i++)
+            {
+                if (meshPkg.ExportMap[i].ClassName != "StaticMesh") continue;
+
+                try
+                {
+                    sm = meshPkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh;
+                }
+                catch
+                {
+                    // not loadable, skip
+                }
+            }
+
+            if (sm == null)
+            {
+                skipped++;
+                continue;
+            }
+
+            if (!sm.TryConvert(out var cm) || cm.LODs.Count == 0)
+            {
+                skipped++;
+                continue;
+            }
+
+            var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0]);
+            var name = sm.Name;
+
+            var gamePath =
+                "/Game/" +
+                key.Substring(key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) + "/Content/".Length)
+                   .Replace(".uasset", "");
+
+            var outFile = Path.Combine(Path.GetFullPath(o.Output), name + ".uasset");
+
+            Reconstructors.BlueprintGraphBuilder.CloneMesh(
+                o.Cube,
+                outFile,
+                name,
+                gamePath,
+                blob
+            );
+
+            Log.Information("Real mesh -> {Out} (gamePath {G})", outFile, gamePath);
+            made++;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning("skip {K}: {M}", key, ex.Message);
+            skipped++;
+        }
+    }
+
+    Log.Information("gen-mesh-all done: {Made} made, {Skipped} skipped", made, skipped);
+    return 0;
+}
 
             if (!string.IsNullOrWhiteSpace(o.GenMeshReal))
             {
@@ -341,7 +427,9 @@ public static class Program
                 NoMediaExport = o.NoMediaExport,
                 DryRun = o.DryRun,
                 Verbose = o.Verbose,
-                ProjectName = projectName
+                ProjectName = projectName,
+                MapTemplate = o.Template,
+                CubePath = o.Cube
             };
 
             // 4. Scaffold project (skipped on dry-run).

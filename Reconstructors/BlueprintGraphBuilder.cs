@@ -590,11 +590,20 @@ public static class BlueprintGraphBuilder
     public static void PlaceActors(string cookedPath, string templatePath, string outDir, string targetShort, string targetPackagePath,
         string? cubePath = null, string? contentRoot = null)
     {
-        var cooked = File.ReadAllBytes(cookedPath);
+        var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, targetShort + ".uasset");
+        PlaceActorsCore(File.ReadAllBytes(cookedPath), Path.GetFileNameWithoutExtension(cookedPath),
+            File.ReadAllBytes(templatePath), outFile, targetShort, targetPackagePath, cubePath, contentRoot);
+    }
+
+    /// <summary>Byte-based core: place a cooked map's reliably-loadable actors onto a template map, writing to <paramref name="outFile"/>.
+    /// Filters out plugin/BP-class actors (e.g. /CustomMapTools/) so the result opens without missing-import crashes.</summary>
+    public static void PlaceActorsCore(byte[] cooked, string cookedName, byte[] templateData, string outFile,
+        string targetShort, string targetPackagePath, string? cubePath = null, string? contentRoot = null)
+    {
         Package cpkg;
         try
         {
-            var ar = new FByteArchive(Path.GetFileNameWithoutExtension(cookedPath), cooked, new VersionContainer(EGame.GAME_UE4_21));
+            var ar = new FByteArchive(cookedName, cooked, new VersionContainer(EGame.GAME_UE4_21));
             cpkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
         }
         catch (Exception ex) { Log.Error(ex, "cooked parse"); return; }
@@ -654,11 +663,11 @@ public static class BlueprintGraphBuilder
         if (place.Count == 0) { Log.Warning("no placeable no-mesh actors found"); return; }
 
         // Reskin template (clone + rename) into the writer.
-        var data = File.ReadAllBytes(templatePath);
+        var data = templateData;
         Package tpkg;
         try
         {
-            var ar = new FByteArchive(Path.GetFileNameWithoutExtension(templatePath), data, new VersionContainer(EGame.GAME_UE4_21));
+            var ar = new FByteArchive("template", data, new VersionContainer(EGame.GAME_UE4_21));
             tpkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
         }
         catch (Exception ex) { Log.Error(ex, "template parse"); return; }
@@ -755,7 +764,7 @@ public static class BlueprintGraphBuilder
             }
         }
 
-        var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, targetShort + ".uasset");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outFile))!);
         spw.Write(outFile);
         Log.Information("Placed {N} actors into {T} -> {Out}", place.Count, targetShort, outFile);
 
