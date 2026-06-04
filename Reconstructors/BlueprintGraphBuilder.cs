@@ -587,7 +587,8 @@ public static class BlueprintGraphBuilder
     /// ActorLabel} + None + int32 0; Component = {RelativeLocation/Rotation/Scale} + None + int32 0; both
     /// outers/refs assigned to new indices. Patches ULevel.Actors. No-mesh actors only for now (mesh actors
     /// need StaticMesh asset resolution).</summary>
-    public static void PlaceActors(string cookedPath, string templatePath, string outDir, string targetShort, string targetPackagePath)
+    public static void PlaceActors(string cookedPath, string templatePath, string outDir, string targetShort, string targetPackagePath,
+        string? cubePath = null, string? contentRoot = null)
     {
         var cooked = File.ReadAllBytes(cookedPath);
         Package cpkg;
@@ -597,15 +598,18 @@ public static class BlueprintGraphBuilder
             cpkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
         }
         catch (Exception ex) { Log.Error(ex, "cooked parse"); return; }
-        var cookedExports = ((CUE4Parse.UE4.Assets.IPackage)cpkg).GetExports().ToList();
+        // Load exports ONE AT A TIME (a single failing export — e.g. missing /CustomMapTools BP import —
+        // must not wipe transforms/mesh refs for all the others).
+        CUE4Parse.UE4.Assets.Exports.UObject? Safe(int i)
+        { try { return i >= 0 && i < cpkg.ExportsLazy.Length ? cpkg.ExportsLazy[i].Value : null; } catch { return null; } }
 
         // Gather placed actors (outer=PersistentLevel, actor-ish class) + their root component transform.
         var skip = new HashSet<string> { "Model", "Brush", "Polys", "Level", "World", "WorldSettings",
-            "NavigationSystemModuleConfig", "BlueprintGeneratedClass", "StaticMeshActor", "None", "RecastNavMesh",
+            "NavigationSystemModuleConfig", "BlueprintGeneratedClass", "None", "RecastNavMesh",
             "PhononProbeVolume", "NavLinkProxy" };   // plugin/custom-component classes that fail to load
         // Only place actors whose class lives in a module the editor reliably has loaded.
         var okPkgs = new HashSet<string> { "/Script/Engine", "/Script/Pavlov", "/Script/NavigationSystem" };
-        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string label, float[] loc, float[] rot, float[] scale)>();
+        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName)>();
         for (int i = 0; i < cpkg.ExportMap.Length; i++)
         {
             var e = cpkg.ExportMap[i];
@@ -621,9 +625,30 @@ public static class BlueprintGraphBuilder
             if (compIdx < 0) continue;
             var (compPkg, compCls) = CookedClassPath(cpkg, cpkg.ExportMap[compIdx]);
             if (compPkg == null) continue;
-            var rootComp = cookedExports[compIdx];
-            place.Add((actorPkg, actorCls, compPkg, compCls, cookedExports[i].Name,
-                ReadVec(rootComp, "RelativeLocation", 0), ReadVec(rootComp, "RelativeRotation", 0), ReadVec(rootComp, "RelativeScale3D", 1)));
+            try
+            {
+                var rootComp = Safe(compIdx);
+                var label = e.ObjectName.Text;
+                var loc = rootComp != null ? ReadVec(rootComp, "RelativeLocation", 0) : new float[] { 0, 0, 0 };
+                var rot = rootComp != null ? ReadVec(rootComp, "RelativeRotation", 0) : new float[] { 0, 0, 0 };
+                var scl = rootComp != null ? ReadVec(rootComp, "RelativeScale3D", 1) : new float[] { 1, 1, 1 };
+                string? meshPkg = null, meshName = null;
+                if (rootComp != null && compCls == "StaticMeshComponent")
+                {
+                    // Resolve the StaticMesh objref via the cooked import table (no provider needed).
+                    var smi = rootComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("StaticMesh");
+                    if (smi != null && smi.Index < 0)
+                    {
+                        var imp = cpkg.ImportMap[-smi.Index - 1];
+                        meshName = imp.ObjectName.Text;
+                        var oidx = imp.OuterIndex?.Index ?? 0;
+                        if (oidx < 0) meshPkg = cpkg.ImportMap[-oidx - 1].ObjectName.Text;
+                    }
+                }
+                var compName = cpkg.ExportMap[compIdx].ObjectName.Text;   // real subobject name (e.g. StaticMeshComponent0)
+                place.Add((actorPkg, actorCls, compPkg, compCls, compName, label, loc, rot, scl, meshPkg, meshName));
+            }
+            catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
         Log.Information("Cooked actors to place: {N} -> {L}", place.Count, string.Join(", ", place.Select(p => $"{p.label}({p.actorClass})")));
         if (place.Count == 0) { Log.Warning("no placeable no-mesh actors found"); return; }
@@ -702,13 +727,23 @@ public static class BlueprintGraphBuilder
             var a = place[i];
             int compPkg = baseExport + i * 2 + 1, actorPkg = baseExport + i * 2 + 2;
             // component
+            int meshObjImp = 0;
+            if (a.meshPkg != null && a.meshName != null)
+            {
+                // package import for the mesh asset path, then the StaticMesh object import under it
+                if (!pkgImpCache.TryGetValue(a.meshPkg, out var mp)) { mp = spw.AddImport("/Script/CoreUObject", "Package", 0, a.meshPkg); pkgImpCache[a.meshPkg] = mp; }
+                meshObjImp = spw.AddImport("/Script/Engine", "StaticMesh", mp, a.meshName);
+            }
             using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
                 var t = new TaggedPropertyWriter(w, spw.Name);
+                if (meshObjImp != 0) t.Object("StaticMesh", meshObjImp);
                 t.Struct("RelativeLocation", "Vector", () => { w.Write(a.loc[0]); w.Write(a.loc[1]); w.Write(a.loc[2]); });
                 if (a.rot[0] != 0 || a.rot[1] != 0 || a.rot[2] != 0) t.Struct("RelativeRotation", "Rotator", () => { w.Write(a.rot[0]); w.Write(a.rot[1]); w.Write(a.rot[2]); });
                 if (a.scale[0] != 1 || a.scale[1] != 1 || a.scale[2] != 1) t.Struct("RelativeScale3D", "Vector", () => { w.Write(a.scale[0]); w.Write(a.scale[1]); w.Write(a.scale[2]); });
-                t.WriteNone(); w.Write(0); w.Flush();
-                spw.AddExportRaw(spw.Name(StripNum(a.compClass) + "_gen"), 0, ClassImp(a.compPkg, a.compClass), 0, 0, actorPkg, ms.ToArray(), 0x1, false);
+                t.WriteNone(); w.Write(0);                              // UActorComponent: UCSModifiedProperties count
+                if (a.compClass == "StaticMeshComponent") w.Write(0);   // UStaticMeshComponent: extra native int32 (LODData)
+                w.Flush();
+                spw.AddExportRaw(spw.Name(a.compName), 0, ClassImp(a.compPkg, a.compClass), 0, 0, actorPkg, ms.ToArray(), 0x1, false);
             }
             // actor (RootComponent -> component, ActorLabel)
             using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
@@ -723,6 +758,24 @@ public static class BlueprintGraphBuilder
         var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, targetShort + ".uasset");
         spw.Write(outFile);
         Log.Information("Placed {N} actors into {T} -> {Out}", place.Count, targetShort, outFile);
+
+        // Generate loadable placeholder mesh assets (cube clones) at the referenced /Game paths so the
+        // map's StaticMesh refs resolve and render.
+        if (!string.IsNullOrEmpty(cubePath) && !string.IsNullOrEmpty(contentRoot))
+        {
+            var meshes = place.Where(p => p.meshPkg != null && p.meshName != null)
+                .Select(p => (pkg: p.meshPkg!, name: p.meshName!)).Distinct().ToList();
+            int ok = 0;
+            foreach (var (mpkg, mname) in meshes)
+            {
+                if (!mpkg.StartsWith("/Game/")) continue;        // only project meshes map to ContentRoot
+                var rel = mpkg.Substring("/Game/".Length).Replace('/', Path.DirectorySeparatorChar);
+                var dest = Path.Combine(contentRoot, rel + ".uasset");
+                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                if (CloneMesh(cubePath, dest, mname, mpkg)) ok++;
+            }
+            Log.Information("Generated {Ok}/{N} placeholder meshes into {Root}", ok, meshes.Count, contentRoot);
+        }
     }
 
     private static string StripNum(string s) => s;
@@ -763,6 +816,68 @@ public static class BlueprintGraphBuilder
         BitConverter.GetBytes(count + newActors.Count).CopyTo(outp, countOff);
         Log.Information("Patched ULevel.Actors: {A} -> {B}", count, count + newActors.Count);
         return outp;
+    }
+
+    /// <summary>Clone a known-loadable editor StaticMesh (the engine Cube) renamed to a target mesh, copying
+    /// its bulk-data region VERBATIM (FByteBulkData offsets are relative to BulkDataStartOffset, so a whole-
+    /// region copy stays valid regardless of our rebuilt header). Produces a loadable placeholder mesh so
+    /// map StaticMeshActor refs resolve and render. Returns true on success.</summary>
+    public static bool CloneMesh(string cubePath, string outFile, string targetShort, string targetPackagePath, byte[]? realFRawMesh = null)
+    {
+        byte[] data;
+        try { data = File.ReadAllBytes(cubePath); } catch { return false; }
+        Package pkg;
+        try
+        {
+            var ar = new FByteArchive(Path.GetFileNameWithoutExtension(cubePath), data, new VersionContainer(EGame.GAME_UE4_21));
+            pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
+        }
+        catch (Exception ex) { Log.Error(ex, "cube parse failed"); return false; }
+
+        var oldPath = pkg.NameMap[0].Name ?? "";                       // /Engine/BasicShapes/Cube
+        var oldShort = oldPath.Contains('/') ? oldPath[(oldPath.LastIndexOf('/') + 1)..] : oldPath;
+        var rename = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [oldPath] = targetPackagePath,
+            [oldPath + "." + oldShort] = targetPackagePath + "." + targetShort,
+            [oldShort] = targetShort,
+        };
+
+        var spw = new SynthPackageWriter(EGame.GAME_UE4_21, targetPackagePath);
+        spw.PackageFlags = (uint)pkg.Summary.PackageFlags;
+        spw.CustomVersionsOverride = pkg.Summary.CustomVersionContainer?.Versions?.Select(v => (v.Key, v.Version)).ToList();
+        foreach (var n in pkg.NameMap) spw.AddRawName(rename.TryGetValue(n.Name ?? "", out var rn) ? rn : (n.Name ?? "None"));
+        foreach (var imp in pkg.ImportMap)
+            spw.AddImportRaw(imp.ClassPackage.Index, imp.ClassPackage.Number, imp.ClassName.Index, imp.ClassName.Number,
+                imp.OuterIndex?.Index ?? 0, imp.ObjectName.Index, imp.ObjectName.Number);
+        // Cube bulk region = from BulkDataStartOffset to EOF (strip a trailing package tag if present).
+        int bulkStart = (int)pkg.Summary.BulkDataStartOffset;
+        int bulkEnd = data.Length;
+        if (bulkEnd - bulkStart >= 4 && BitConverter.ToUInt32(data, bulkEnd - 4) == 0x9E2A83C1u) bulkEnd -= 4;
+        long cubeBulkLen = (bulkStart > 0 && bulkEnd > bulkStart) ? bulkEnd - bulkStart : 0;
+
+        foreach (var e in pkg.ExportMap)
+        {
+            var payload = new byte[(int)e.SerialSize];
+            Array.Copy(data, (int)e.SerialOffset, payload, 0, payload.Length);
+            // Real geometry: re-point the StaticMesh's FRawMesh bulk header at the appended real blob (offset
+            // = after the cube bulk) + new size + new source Guid (forces RenderData rebuild from real mesh).
+            if (realFRawMesh != null && e.ClassName == "StaticMesh")
+                MeshWriter.PatchFRawMeshHeader(payload, realFRawMesh.Length, cubeBulkLen);
+            spw.AddExportRaw(e.ObjectName.Index, e.ObjectName.Number, e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0,
+                e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0, payload, (uint)e.ObjectFlags, e.IsAsset);
+        }
+
+        if (cubeBulkLen > 0)
+        {
+            var bulk = new byte[cubeBulkLen];
+            Array.Copy(data, bulkStart, bulk, 0, bulk.Length);
+            spw.AddBulk(bulk);                       // cube bulk first (keeps its internal offsets valid)
+        }
+        if (realFRawMesh != null) spw.AddBulk(realFRawMesh);   // appended at relative offset == cubeBulkLen
+        spw.Write(outFile);
+        Log.Information("Cloned mesh {Short} -> {Out} (bulk {B}B)", targetShort, outFile, bulkEnd - bulkStart);
+        return true;
     }
 
     public static void Build(string cookedPath, string outDir)

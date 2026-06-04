@@ -1,5 +1,6 @@
 using CommandLine;
 using CUE4Parse.UE4.Versions;
+using CUE4Parse_Conversion.Meshes;
 using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
@@ -65,6 +66,9 @@ public static class Program
         [Option("extract-file", HelpText = "Dev: extract one package (umap/uasset + uexp combined) by virtual-path substring to --output.")]
         public string? ExtractFile { get; set; }
 
+        [Option("gen-mesh-real", HelpText = "Tier2 mesh: build a REAL-geometry editor StaticMesh from a cooked mesh (by virtual-path substring). Needs --cube. Writes to --output.")]
+        public string? GenMeshReal { get; set; }
+
         [Option("decode", HelpText = "Dev: raw-decode a local .uasset/.umap summary+imports and exit (no pak mount).")]
         public string? Decode { get; set; }
 
@@ -100,6 +104,12 @@ public static class Program
 
         [Option("place-actors", HelpText = "Tier2: synthesize a cooked map's no-mesh actors onto a template map. Value = cooked map path.")]
         public string? PlaceActors { get; set; }
+
+        [Option("cube", HelpText = "Engine Cube StaticMesh path, cloned as a loadable placeholder for each referenced mesh.")]
+        public string? Cube { get; set; }
+
+        [Option("content-root", HelpText = "Project Content dir; placeholder meshes are written here at their /Game paths.")]
+        public string? ContentRoot { get; set; }
 
         [Option("template", HelpText = "Loadable editor BP template path for --reconstruct.")]
         public string? Template { get; set; }
@@ -210,7 +220,7 @@ public static class Program
         if (!string.IsNullOrWhiteSpace(o.PlaceActors))
         {
             Reconstructors.BlueprintGraphBuilder.PlaceActors(o.PlaceActors, o.Template ?? "", o.Output,
-                o.ReskinName ?? "placed", o.ReskinPath ?? "/Game/Maps/placed");
+                o.ReskinName ?? "placed", o.ReskinPath ?? "/Game/Maps/placed", o.Cube, o.ContentRoot);
             return 0;
         }
 
@@ -242,6 +252,50 @@ public static class Program
                     .OrderBy(k => k).Take(200).ToList();
                 Log.Information("{N} match(es) for '{S}':", hits.Count, o.ListFiles);
                 foreach (var h in hits) Console.WriteLine("  " + h);
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.GenMeshReal))
+            {
+                var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.GenMeshReal, StringComparison.OrdinalIgnoreCase) && k.EndsWith(".uasset"));
+                if (key == null) { Log.Error("no mesh .uasset match for '{S}'", o.GenMeshReal); return 1; }
+                var meshPkg = (CUE4Parse.UE4.Assets.Package)extractor.Provider.LoadPackage(key);
+                CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh? sm = null;
+                for (var i = 0; i < meshPkg.ExportMap.Length && sm == null; i++)
+                {
+                    if (meshPkg.ExportMap[i].ClassName != "StaticMesh") continue;
+                    try { sm = meshPkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh; }
+                    catch (Exception ex) { Log.Warning("mesh export {I} load: {M}", i, ex.Message); }
+                }
+                if (sm == null) { Log.Error("no loadable UStaticMesh export in {K}", key); return 1; }
+                if (!sm.TryConvert(out var cm) || cm.LODs.Count == 0) { Log.Error("mesh convert failed"); return 1; }
+                var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0]);
+                var name = sm.Name;
+                var gamePath = "/Game/" + key.Substring(key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) + "/Content/".Length).Replace(".uasset", "");
+                Directory.CreateDirectory(Path.GetFullPath(o.Output));
+                var outFile = Path.Combine(Path.GetFullPath(o.Output), name + ".uasset");
+                Reconstructors.BlueprintGraphBuilder.CloneMesh(o.Cube ?? "", outFile, name, gamePath, blob);
+                Log.Information("Real mesh -> {Out} (gamePath {G})", outFile, gamePath);
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.ExtractFile))
+            {
+                var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.ExtractFile, StringComparison.OrdinalIgnoreCase) &&
+                    (k.EndsWith(".umap") || k.EndsWith(".uasset")));
+                if (key == null) { Log.Error("no .umap/.uasset match for '{S}'", o.ExtractFile); return 1; }
+                var pkgFiles = extractor.Provider.SavePackage(key);   // {virtualPath: bytes} for .uasset/.umap + .uexp + .ubulk
+                Directory.CreateDirectory(Path.GetFullPath(o.Output));
+                var baseName = Path.GetFileNameWithoutExtension(key);
+                var headerExt = key.EndsWith(".umap") ? ".umap" : ".uasset";
+                var header = pkgFiles.First(kv => kv.Key.EndsWith(headerExt)).Value;
+                var uexp = pkgFiles.FirstOrDefault(kv => kv.Key.EndsWith(".uexp")).Value;
+                var combined = uexp == null ? header : header.Concat(uexp).ToArray();   // editor-combined single file
+                var outPath = Path.Combine(Path.GetFullPath(o.Output), baseName + headerExt);
+                File.WriteAllBytes(outPath, combined);
+                Log.Information("Extracted {K} -> {Out} ({H}B header + {E}B uexp = {T}B)", key, outPath, header.Length, uexp?.Length ?? 0, combined.Length);
                 return 0;
             }
 

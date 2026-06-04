@@ -49,6 +49,13 @@ public sealed class SynthPackageWriter
         public byte[] Payload = Array.Empty<byte>();
     }
 
+    private readonly List<byte[]> _bulk = new();
+    private long _bulkTotal;
+    /// <summary>Append a bulk-data payload (e.g. FRawMesh blob). Returns its offset RELATIVE to
+    /// Summary.BulkDataStartOffset — exactly what an FByteBulkData header stores in 4.21 (the engine
+    /// adds BulkDataStartOffset back on load). Caller embeds this offset in the export's FByteBulkData header.</summary>
+    public long AddBulk(byte[] data) { var off = _bulkTotal; _bulk.Add(data); _bulkTotal += data.Length; return off; }
+
     /// <summary>Pre-add a base name at a specific position (cooked NameMap order). Returns its index.</summary>
     public int AddRawName(string s) => Name(s);
 
@@ -107,6 +114,7 @@ public sealed class SynthPackageWriter
         using var fs = File.Create(outPath);
         fs.Write(summaryBuf); fs.Write(namesBuf); fs.Write(importsBuf); fs.Write(exportsBuf); fs.Write(dependsBuf); fs.Write(arBuf);
         foreach (var e in _exports) fs.Write(e.Payload);
+        foreach (var b in _bulk) fs.Write(b);          // bulk region at BulkDataStartOffset (== bulkStart)
         fs.Write(BitConverter.GetBytes(0x9E2A83C1u));
     }
 
