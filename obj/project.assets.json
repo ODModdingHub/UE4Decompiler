@@ -6323,8 +6323,8 @@
           "framework": "net8.0",
           "targetAlias": "net8.0",
           "projectReferences": {
-            "c:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj": {
-              "projectPath": "c:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj"
+            "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj": {
+              "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse-Conversion\\CUE4Parse-Conversion.csproj"
             },
             "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj": {
               "projectPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\CUE4Parse\\CUE4Parse\\CUE4Parse.csproj"

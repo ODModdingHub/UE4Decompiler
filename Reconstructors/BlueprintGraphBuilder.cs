@@ -598,7 +598,8 @@ public static class BlueprintGraphBuilder
     /// <summary>Byte-based core: place a cooked map's reliably-loadable actors onto a template map, writing to <paramref name="outFile"/>.
     /// Filters out plugin/BP-class actors (e.g. /CustomMapTools/) so the result opens without missing-import crashes.</summary>
     public static void PlaceActorsCore(byte[] cooked, string cookedName, byte[] templateData, string outFile,
-        string targetShort, string targetPackagePath, string? cubePath = null, string? contentRoot = null)
+        string targetShort, string targetPackagePath, string? cubePath = null, string? contentRoot = null,
+        Action<string, string, string>? onGameClass = null)
     {
         Package cpkg;
         try
@@ -616,8 +617,9 @@ public static class BlueprintGraphBuilder
         var skip = new HashSet<string> { "Model", "Brush", "Polys", "Level", "World", "WorldSettings",
             "NavigationSystemModuleConfig", "BlueprintGeneratedClass", "None", "RecastNavMesh",
             "PhononProbeVolume", "NavLinkProxy" };   // plugin/custom-component classes that fail to load
-        // Only place actors whose class lives in a module the editor reliably has loaded.
-        var okPkgs = new HashSet<string> { "/Script/Engine", "/Script/Pavlov", "/Script/NavigationSystem" };
+        // Place actors from any /Script/ module. Game-native actor classes (/Script/Pavlov.*) get a stub, and we
+        // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
+        // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
         var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName)>();
         for (int i = 0; i < cpkg.ExportMap.Length; i++)
         {
@@ -627,13 +629,22 @@ public static class BlueprintGraphBuilder
             var cls = e.ClassName;
             if (skip.Contains(cls) || cls.EndsWith("Component")) continue;
             var (actorPkg, actorCls) = CookedClassPath(cpkg, e);
-            if (actorPkg == null || !okPkgs.Contains(actorPkg)) continue;   // only reliably-loadable native classes
+            if (actorPkg == null || !actorPkg.StartsWith("/Script/", StringComparison.Ordinal)) continue;  // native classes only
             int compIdx = -1;
             for (int j = 0; j < cpkg.ExportMap.Length; j++)
                 if (cpkg.ExportMap[j].OuterIndex?.Index == i + 1 && cpkg.ExportMap[j].ClassName.EndsWith("Component")) { compIdx = j; break; }
             if (compIdx < 0) continue;
             var (compPkg, compCls) = CookedClassPath(cpkg, cpkg.ExportMap[compIdx]);
-            if (compPkg == null) continue;
+            if (compPkg == null || !compPkg.StartsWith("/Script/", StringComparison.Ordinal)) continue;
+            // Still record the real base (helps stub generation for refs elsewhere)...
+            onGameClass?.Invoke(actorPkg!, actorCls!, "AActor");
+            onGameClass?.Invoke(compPkg!, compCls!, "USceneComponent");
+            // ...but for PLACEMENT, substitute a guaranteed-loaded engine class for any game-native actor/component.
+            // Placing a /Script/Pavlov actor requires its stub module to be COMPILED; if the user hasn't rebuilt the
+            // C++ project the class is unresolved and the editor crashes spawning it. A StaticMeshActor placeholder
+            // (keeping transform + mesh + original name as label) spawns unconditionally — no recompile needed.
+            if (actorPkg != "/Script/Engine") { actorPkg = "/Script/Engine"; actorCls = "StaticMeshActor"; compPkg = "/Script/Engine"; compCls = "StaticMeshComponent"; }
+            else if (compPkg != "/Script/Engine") { compPkg = "/Script/Engine"; compCls = "SceneComponent"; }
             try
             {
                 var rootComp = Safe(compIdx);
@@ -660,7 +671,10 @@ public static class BlueprintGraphBuilder
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
         Log.Information("Cooked actors to place: {N} -> {L}", place.Count, string.Join(", ", place.Select(p => $"{p.label}({p.actorClass})")));
-        if (place.Count == 0) { Log.Warning("no placeable no-mesh actors found"); return; }
+        // NOTE: do NOT bail on place.Count == 0 — we must still emit a valid (empty) reskinned template map.
+        // Bailing leaves a stale/old .umap in place (e.g. a prior UncookedPackageWriter dump with an unresolvable
+        // cooked import table), which crashes the editor/content-browser with a 0x8 null-deref on scan/open.
+        if (place.Count == 0) Log.Information("no placeable actors for {T}; writing empty map", targetShort);
 
         // Reskin template (clone + rename) into the writer.
         var data = templateData;
@@ -746,6 +760,9 @@ public static class BlueprintGraphBuilder
             using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
                 var t = new TaggedPropertyWriter(w, spw.Name);
                 if (meshObjImp != 0) t.Object("StaticMesh", meshObjImp);
+                // Mark Movable so the editor never bakes static lighting for these synthesized components —
+                // Lightmass derefs null on placed lights/meshes that lack full bake data (Build Lighting crash).
+                t.ByteEnum("Mobility", "EComponentMobility::Type", "EComponentMobility::Movable");
                 t.Struct("RelativeLocation", "Vector", () => { w.Write(a.loc[0]); w.Write(a.loc[1]); w.Write(a.loc[2]); });
                 if (a.rot[0] != 0 || a.rot[1] != 0 || a.rot[2] != 0) t.Struct("RelativeRotation", "Rotator", () => { w.Write(a.rot[0]); w.Write(a.rot[1]); w.Write(a.rot[2]); });
                 if (a.scale[0] != 1 || a.scale[1] != 1 || a.scale[2] != 1) t.Struct("RelativeScale3D", "Vector", () => { w.Write(a.scale[0]); w.Write(a.scale[1]); w.Write(a.scale[2]); });
@@ -768,23 +785,10 @@ public static class BlueprintGraphBuilder
         spw.Write(outFile);
         Log.Information("Placed {N} actors into {T} -> {Out}", place.Count, targetShort, outFile);
 
-        // Generate loadable placeholder mesh assets (cube clones) at the referenced /Game paths so the
-        // map's StaticMesh refs resolve and render.
-        if (!string.IsNullOrEmpty(cubePath) && !string.IsNullOrEmpty(contentRoot))
-        {
-            var meshes = place.Where(p => p.meshPkg != null && p.meshName != null)
-                .Select(p => (pkg: p.meshPkg!, name: p.meshName!)).Distinct().ToList();
-            int ok = 0;
-            foreach (var (mpkg, mname) in meshes)
-            {
-                if (!mpkg.StartsWith("/Game/")) continue;        // only project meshes map to ContentRoot
-                var rel = mpkg.Substring("/Game/".Length).Replace('/', Path.DirectorySeparatorChar);
-                var dest = Path.Combine(contentRoot, rel + ".uasset");
-                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                if (CloneMesh(cubePath, dest, mname, mpkg)) ok++;
-            }
-            Log.Information("Generated {Ok}/{N} placeholder meshes into {Root}", ok, meshes.Count, contentRoot);
-        }
+        // NOTE: do NOT generate placeholder cube meshes here. The main pipeline already dumps every referenced
+        // StaticMesh (real geometry + multi-material). Writing cubes to the same /Game paths from this (parallel)
+        // map pass RACES the pipeline's real-mesh write and can clobber it with a 1-slot WorldGridMaterial cube.
+        _ = cubePath; _ = contentRoot;
     }
 
     private static string StripNum(string s) => s;
@@ -831,7 +835,8 @@ public static class BlueprintGraphBuilder
     /// its bulk-data region VERBATIM (FByteBulkData offsets are relative to BulkDataStartOffset, so a whole-
     /// region copy stays valid regardless of our rebuilt header). Produces a loadable placeholder mesh so
     /// map StaticMeshActor refs resolve and render. Returns true on success.</summary>
-    public static bool CloneMesh(string cubePath, string outFile, string targetShort, string targetPackagePath, byte[]? realFRawMesh = null)
+    public static bool CloneMesh(string cubePath, string outFile, string targetShort, string targetPackagePath,
+        byte[]? realFRawMesh = null, IReadOnlyList<(string pkg, string name, string slot)>? materials = null)
     {
         byte[] data;
         try { data = File.ReadAllBytes(cubePath); } catch { return false; }
@@ -865,6 +870,7 @@ public static class BlueprintGraphBuilder
         if (bulkEnd - bulkStart >= 4 && BitConverter.ToUInt32(data, bulkEnd - 4) == 0x9E2A83C1u) bulkEnd -= 4;
         long cubeBulkLen = (bulkStart > 0 && bulkEnd > bulkStart) ? bulkEnd - bulkStart : 0;
 
+        int CubeName(string s) => Array.FindIndex(pkg.NameMap, n => n.Name == s);
         foreach (var e in pkg.ExportMap)
         {
             var payload = new byte[(int)e.SerialSize];
@@ -873,6 +879,20 @@ public static class BlueprintGraphBuilder
             // = after the cube bulk) + new size + new source Guid (forces RenderData rebuild from real mesh).
             if (realFRawMesh != null && e.ClassName == "StaticMesh")
                 MeshWriter.PatchFRawMeshHeader(payload, realFRawMesh.Length, cubeBulkLen);
+            // Replace the cube's single WorldGridMaterial slot with the mesh's real N material slots, so each
+            // section renders its own material (FaceMaterialIndices in the FRawMesh select the slot).
+            if (e.ClassName == "StaticMesh" && materials is { Count: > 0 })
+            {
+                // UStaticMesh serializes StaticMaterials NATIVELY (Ar << StaticMaterials), not as a tagged property,
+                // so the cube's native 1-slot WorldGridMaterial array is what the editor actually reads. Patch it.
+                payload = PatchNativeStaticMaterials(payload, materials, spw);
+                // Rewrite SectionInfoMap/OriginalSectionInfoMap (section i -> material i; these ARE tagged UPROPERTYs
+                // at this version) so the build maps each render section to its own slot.
+                payload = InjectSectionInfoMaps(payload, materials.Count, spw, CubeName);
+            }
+            // Force bAutoComputeLODScreenSize=false on the mesh (auto LOD-distance bugs the visuals).
+            if (e.ClassName == "StaticMesh")
+                payload = InjectBoolProp(payload, "bAutoComputeLODScreenSize", false, spw, CubeName);
             spw.AddExportRaw(e.ObjectName.Index, e.ObjectName.Number, e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0,
                 e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0, payload, (uint)e.ObjectFlags, e.IsAsset);
         }
@@ -889,19 +909,255 @@ public static class BlueprintGraphBuilder
         return true;
     }
 
-    public static void Build(string cookedPath, string outDir)
+    /// <summary>Replace the cloned cube's single-entry StaticMaterials with an N-slot array (one FStaticMaterial
+    /// per material the source mesh uses). Each slot's MaterialInterface points at a freshly-added import for the
+    /// dumped /Game material (our materials are always written as UMaterial, so import class = "Material").</summary>
+    private static byte[] InjectStaticMaterials(byte[] payload, IReadOnlyList<(string pkg, string name, string slot)> mats,
+        SynthPackageWriter spw, Func<string, int> cubeName)
     {
-        var data = File.ReadAllBytes(cookedPath);
+        NodePayloadWalker.StructPropertyIdx = cubeName("StructProperty");
+        NodePayloadWalker.BoolPropertyIdx = cubeName("BoolProperty");
+        NodePayloadWalker.BytePropertyIdx = cubeName("ByteProperty");
+        NodePayloadWalker.EnumPropertyIdx = cubeName("EnumProperty");
+        NodePayloadWalker.ArrayPropertyIdx = cubeName("ArrayProperty");
+        NodePayloadWalker.SetPropertyIdx = cubeName("SetProperty");
+        NodePayloadWalker.MapPropertyIdx = cubeName("MapProperty");
+        int noneIdx = cubeName("None"), smIdx = cubeName("StaticMaterials");
+        if (noneIdx < 0 || smIdx < 0) { Log.Warning("InjectStaticMaterials: cube lacks None/StaticMaterials name"); return payload; }
+
+        int start, end;
+        try { (start, end) = NodePayloadWalker.FindPropertySpan(payload, 0, noneIdx, smIdx); }
+        catch (Exception ex) { Log.Warning(ex, "InjectStaticMaterials: walk failed"); return payload; }
+        if (start < 0) { Log.Warning("InjectStaticMaterials: StaticMaterials property not found"); return payload; }
+
+        var pkgCache = new Dictionary<string, int>(StringComparer.Ordinal);
+        var slots = new List<(int matImport, string slot)>(mats.Count);
+        foreach (var (mpkg, mname, slot) in mats)
+        {
+            if (!pkgCache.TryGetValue(mpkg, out var pimp)) { pimp = spw.AddImport("/Script/CoreUObject", "Package", 0, mpkg); pkgCache[mpkg] = pimp; }
+            int mimp = spw.AddImport("/Script/Engine", "Material", pimp, mname);
+            slots.Add((mimp, string.IsNullOrEmpty(slot) ? mname : slot));
+        }
+
+        byte[] newBytes;
+        using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
+            new TaggedPropertyWriter(w, spw.Name).StaticMaterialsArray(slots); w.Flush(); newBytes = ms.ToArray(); }
+
+        var outp = new byte[start + newBytes.Length + (payload.Length - end)];
+        Array.Copy(payload, 0, outp, 0, start);
+        newBytes.CopyTo(outp, start);
+        Array.Copy(payload, end, outp, start + newBytes.Length, payload.Length - end);
+        Log.Information("StaticMaterials: {N} slot(s) [{S}]", slots.Count, string.Join(", ", mats.Select(m => m.name)));
+        return outp;
+    }
+
+    /// <summary>Rewrite the cloned cube's NATIVE StaticMaterials array (UStaticMesh serializes it via Ar &lt;&lt;
+    /// StaticMaterials, after the source models + bHasSpeedTreeWind — NOT as a tagged property). It is the last
+    /// native field (only zero padding follows in 4.21), so it spans from its int32 count to the end of the payload.
+    /// 4.21 editor FStaticMaterial = MaterialInterface(FPackageIndex,4) + MaterialSlotName(FName,8) +
+    /// ImportedMaterialSlotName(FName,8) + FMeshUVChannelInfo(bInitialized i32 + bOverrideDensities i32 + 4 floats =24)
+    /// = 44 bytes. UVChannelData is left uninitialised; the editor recomputes it on build.</summary>
+    private static byte[] PatchNativeStaticMaterials(byte[] payload, IReadOnlyList<(string pkg, string name, string slot)> mats,
+        SynthPackageWriter spw)
+    {
+        const int ELEM = 44;
+        // Locate the cube's native array at the tail: an int32 count C for which C*44+4 == bytes-to-end and the first
+        // element's MaterialInterface is a negative FPackageIndex (an import).
+        int smStart = -1, found = 0;
+        for (int c = 1; c <= 64; c++)
+        {
+            int pos = payload.Length - (c * ELEM + 4);
+            if (pos < 0) break;
+            if (BitConverter.ToInt32(payload, pos) != c) continue;
+            if (BitConverter.ToInt32(payload, pos + 4) >= 0) continue;   // MaterialInterface must be an import (<0)
+            smStart = pos; found = c; break;
+        }
+        if (smStart < 0) { Log.Warning("PatchNativeStaticMaterials: native StaticMaterials not found at payload tail"); return payload; }
+
+        var pkgCache = new Dictionary<string, int>(StringComparer.Ordinal);
+        using var ms = new MemoryStream();
+        using var w = new FArchiveWriter(ms);
+        w.Write(mats.Count);
+        foreach (var (mpkg, mname, slot) in mats)
+        {
+            if (!pkgCache.TryGetValue(mpkg, out var pimp)) { pimp = spw.AddImport("/Script/CoreUObject", "Package", 0, mpkg); pkgCache[mpkg] = pimp; }
+            int mimp = spw.AddImport("/Script/Engine", "Material", pimp, mname);
+            var sname = string.IsNullOrEmpty(slot) ? mname : slot;
+            w.Write(mimp);                                  // MaterialInterface (FPackageIndex)
+            w.Write(spw.Name(sname)); w.Write(0);           // MaterialSlotName
+            w.Write(spw.Name(sname)); w.Write(0);           // ImportedMaterialSlotName (editor-only)
+            w.Write(0); w.Write(0);                         // UVChannelData: bInitialized + bOverrideDensities
+            w.Write(0f); w.Write(0f); w.Write(0f); w.Write(0f); // LocalUVDensities[4] (recomputed on build)
+        }
+        w.Flush();
+        var nbytes = ms.ToArray();
+
+        var outp = new byte[smStart + nbytes.Length];
+        Array.Copy(payload, 0, outp, 0, smStart);
+        nbytes.CopyTo(outp, smStart);
+        Log.Information("Native StaticMaterials: cube {C}-slot -> {N} slot(s) [{S}] @tail {Off}",
+            found, mats.Count, string.Join(", ", mats.Select(m => m.name)), smStart);
+        return outp;
+    }
+
+    /// <summary>Inject a fresh SectionInfoMap + OriginalSectionInfoMap (each an N-entry TMap mapping render
+    /// section i -> material slot i) just before the terminating None. They appear after the cube's stale 1-entry
+    /// SectionInfoMap, so UE's last-property-wins deserialization uses ours — without this the editor's static-mesh
+    /// build resets StaticMaterials back to the cube's single WorldGridMaterial slot.</summary>
+    private static byte[] InjectSectionInfoMaps(byte[] payload, int sectionCount, SynthPackageWriter spw, Func<string, int> cubeName)
+    {
+        NodePayloadWalker.StructPropertyIdx = cubeName("StructProperty");
+        NodePayloadWalker.BoolPropertyIdx = cubeName("BoolProperty");
+        NodePayloadWalker.BytePropertyIdx = cubeName("ByteProperty");
+        NodePayloadWalker.EnumPropertyIdx = cubeName("EnumProperty");
+        NodePayloadWalker.ArrayPropertyIdx = cubeName("ArrayProperty");
+        NodePayloadWalker.SetPropertyIdx = cubeName("SetProperty");
+        NodePayloadWalker.MapPropertyIdx = cubeName("MapProperty");
+        int noneIdx = cubeName("None");
+        if (noneIdx < 0) { Log.Warning("InjectSectionInfoMaps: no None in name table"); return payload; }
+
+        int afterNone;
+        try { afterNone = NodePayloadWalker.SkipTaggedProperties(payload, 0, noneIdx); }
+        catch (Exception ex) { Log.Warning(ex, "InjectSectionInfoMaps: tagged-prop walk failed"); return payload; }
+        int noneStart = afterNone - 8;            // None FName is 8 bytes (idx + number)
+        if (noneStart < 0) return payload;
+
+        var identity = Enumerable.Range(0, sectionCount).ToList();   // section i -> material i
+        byte[] inject;
+        using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
+            var tpw = new TaggedPropertyWriter(w, spw.Name);
+            tpw.SectionInfoMap("SectionInfoMap", identity);
+            tpw.SectionInfoMap("OriginalSectionInfoMap", identity);
+            w.Flush(); inject = ms.ToArray(); }
+
+        var outp = new byte[payload.Length + inject.Length];
+        Array.Copy(payload, 0, outp, 0, noneStart);
+        inject.CopyTo(outp, noneStart);
+        Array.Copy(payload, noneStart, outp, noneStart + inject.Length, payload.Length - noneStart);
+        Log.Information("Injected SectionInfoMap+OriginalSectionInfoMap ({N} section(s), {B}B)", sectionCount, inject.Length);
+        return outp;
+    }
+
+    /// <summary>Splice a BoolProperty (value lives in the tag) into a cloned export's tagged-property block,
+    /// just before the terminating None so it overrides any earlier/default value. Name indices resolve in the
+    /// synth writer (appended after the verbatim cube names, so existing payload indices stay valid).</summary>
+    private static byte[] InjectBoolProp(byte[] payload, string propName, bool value, SynthPackageWriter spw, Func<string, int> cubeName)
+    {
+        NodePayloadWalker.StructPropertyIdx = cubeName("StructProperty");
+        NodePayloadWalker.BoolPropertyIdx = cubeName("BoolProperty");
+        NodePayloadWalker.BytePropertyIdx = cubeName("ByteProperty");
+        NodePayloadWalker.EnumPropertyIdx = cubeName("EnumProperty");
+        NodePayloadWalker.ArrayPropertyIdx = cubeName("ArrayProperty");
+        NodePayloadWalker.SetPropertyIdx = cubeName("SetProperty");
+        NodePayloadWalker.MapPropertyIdx = cubeName("MapProperty");
+        int noneIdx = cubeName("None");
+        if (noneIdx < 0) { Log.Warning("InjectBoolProp: no None in name table"); return payload; }
+
+        int afterNone;
+        try { afterNone = NodePayloadWalker.SkipTaggedProperties(payload, 0, noneIdx); }
+        catch (Exception ex) { Log.Warning(ex, "InjectBoolProp: tagged-prop walk failed; skipping {P}", propName); return payload; }
+        int noneStart = afterNone - 8;            // None FName is 8 bytes (idx + number)
+        if (noneStart < 0) return payload;
+
+        using var ms = new MemoryStream();
+        using var w = new FArchiveWriter(ms);
+        w.Write(spw.Name(propName)); w.Write(0);          // Name FName
+        w.Write(spw.Name("BoolProperty")); w.Write(0);    // Type FName
+        w.Write(0);                                       // Size (bool value is in tag)
+        w.Write(0);                                       // ArrayIndex
+        w.WriteByteBool(value);                           // BoolVal
+        w.WriteByteBool(false);                           // HasPropertyGuid
+        w.Flush();
+        var inject = ms.ToArray();
+
+        var outp = new byte[payload.Length + inject.Length];
+        Array.Copy(payload, 0, outp, 0, noneStart);
+        inject.CopyTo(outp, noneStart);
+        Array.Copy(payload, noneStart, outp, noneStart + inject.Length, payload.Length - noneStart);
+        Log.Information("Injected {P}={V} into StaticMesh ({N}B)", propName, value, inject.Length);
+        return outp;
+    }
+
+    /// <summary>Clone an engine editor material (template: /Engine/EngineMaterials/EmissiveTexturedMaterial — an
+    /// unlit material that samples one texture) renamed to the target, and redirect its texture import to
+    /// <paramref name="texturePackagePath"/>.<paramref name="textureName"/>. The editor recompiles shaders from the
+    /// (verbatim-cloned) expression graph on load, so the texture displays. Returns true on success.</summary>
+    public static bool CloneMaterial(string templatePath, string outFile, string targetShort, string targetPackagePath,
+        string texturePackagePath, string textureName)
+    {
+        byte[] data;
+        try { data = File.ReadAllBytes(templatePath); } catch (Exception ex) { Log.Error(ex, "material template read"); return false; }
         Package pkg;
         try
         {
-            var ar = new FByteArchive(Path.GetFileNameWithoutExtension(cookedPath), data, new VersionContainer(EGame.GAME_UE4_21));
+            var ar = new FByteArchive(Path.GetFileNameWithoutExtension(templatePath), data, new VersionContainer(EGame.GAME_UE4_21));
             pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
         }
-        catch (Exception ex) { Log.Error(ex, "parse failed"); return; }
+        catch (Exception ex) { Log.Error(ex, "material template parse"); return false; }
 
+        var oldPath = pkg.NameMap[0].Name ?? "";                       // /Engine/EngineMaterials/EmissiveTexturedMaterial
+        var oldShort = oldPath.Contains('/') ? oldPath[(oldPath.LastIndexOf('/') + 1)..] : oldPath;
+        const string texPkgOld = "/Engine/EngineMaterials/DefaultDiffuse";  // template's texture package import
+        const string texObjOld = "DefaultDiffuse";                          // template's texture object import
+        var rename = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [oldPath] = targetPackagePath,
+            [oldPath + "." + oldShort] = targetPackagePath + "." + targetShort,
+            [oldShort] = targetShort,
+            [texPkgOld] = texturePackagePath,
+            [texObjOld] = textureName,
+        };
+
+        var spw = new SynthPackageWriter(EGame.GAME_UE4_21, targetPackagePath);
+        spw.PackageFlags = (uint)pkg.Summary.PackageFlags;
+        spw.CustomVersionsOverride = pkg.Summary.CustomVersionContainer?.Versions?.Select(v => (v.Key, v.Version)).ToList();
+        foreach (var n in pkg.NameMap) spw.AddRawName(rename.TryGetValue(n.Name ?? "", out var rn) ? rn : (n.Name ?? "None"));
+        foreach (var imp in pkg.ImportMap)
+            spw.AddImportRaw(imp.ClassPackage.Index, imp.ClassPackage.Number, imp.ClassName.Index, imp.ClassName.Number,
+                imp.OuterIndex?.Index ?? 0, imp.ObjectName.Index, imp.ObjectName.Number);
+
+        int bulkStart = (int)pkg.Summary.BulkDataStartOffset;
+        int bulkEnd = data.Length;
+        if (bulkEnd - bulkStart >= 4 && BitConverter.ToUInt32(data, bulkEnd - 4) == 0x9E2A83C1u) bulkEnd -= 4;
+        long bulkLen = (bulkStart > 0 && bulkEnd > bulkStart) ? bulkEnd - bulkStart : 0;
+
+        foreach (var e in pkg.ExportMap)
+        {
+            var payload = new byte[(int)e.SerialSize];
+            Array.Copy(data, (int)e.SerialOffset, payload, 0, payload.Length);
+            spw.AddExportRaw(e.ObjectName.Index, e.ObjectName.Number, e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0,
+                e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0, payload, (uint)e.ObjectFlags, e.IsAsset);
+        }
+        if (bulkLen > 0) { var bulk = new byte[bulkLen]; Array.Copy(data, bulkStart, bulk, 0, bulk.Length); spw.AddBulk(bulk); }
+        spw.Write(outFile);
+        Log.Information("Cloned material {Short} -> {Out} (tex {T})", targetShort, outFile, texturePackagePath + "." + textureName);
+        return true;
+    }
+
+    public static void Build(string cookedPath, string outDir)
+    {
+        var data = File.ReadAllBytes(cookedPath);
         var bpName = Path.GetFileNameWithoutExtension(cookedPath);             // e.g. BP_HandProxyExample
-        var spw = new SynthPackageWriter(EGame.GAME_UE4_21, "/Game/" + bpName);
+        var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, bpName + ".uasset");
+        BuildCore(data, bpName, "/Game/" + bpName, outFile);
+    }
+
+    /// <summary>Reconstruct an editor-openable blueprint from the COMBINED cooked bytes (.uasset+.uexp): clone the
+    /// cooked exports verbatim (zeroing bCooked on UClass-family payloads) and append the editor exports the cooker
+    /// stripped — UBlueprint (the browsable asset) + EventGraph + a BeginPlay K2Node_Event. Returns false on any
+    /// failure so the pipeline can fall back to the plain uncooked write. <paramref name="packagePath"/> is the real
+    /// "/Game/..." path so the asset lands at the right place in the content browser.</summary>
+    public static bool BuildCore(byte[] data, string bpName, string packagePath, string outFile)
+    {
+        Package pkg;
+        try
+        {
+            var ar = new FByteArchive(bpName, data, new VersionContainer(EGame.GAME_UE4_21));
+            pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
+        }
+        catch (Exception ex) { Log.Warning(ex, "BuildCore parse failed for {Bp}", bpName); return false; }
+
+        var spw = new SynthPackageWriter(EGame.GAME_UE4_21, packagePath);
 
         // 1) Pre-add cooked names in exact order so indices match the verbatim payloads.
         foreach (var n in pkg.NameMap) spw.AddRawName(n.Name ?? "None");
@@ -915,7 +1171,7 @@ public static class BlueprintGraphBuilder
         var noneIdx = Array.FindIndex(pkg.NameMap, n => string.Equals(n.Name, "None", StringComparison.Ordinal));
 
         // 3) Re-add cooked exports verbatim (payload sliced from file).
-        int bgcPkg = 0, bgcSuper = 0;
+        int bgcPkg = 0, bgcSuper = 0, scsPkg = 0;
         for (var i = 0; i < pkg.ExportMap.Length; i++)
         {
             var e = pkg.ExportMap[i];
@@ -929,8 +1185,9 @@ public static class BlueprintGraphBuilder
                 e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0, e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0,
                 payload, (uint)e.ObjectFlags, e.IsAsset);
             if (e.ClassName == "BlueprintGeneratedClass") { bgcPkg = pkgIdx; bgcSuper = e.SuperIndex?.Index ?? 0; }
+            if (e.ClassName == "SimpleConstructionScript") scsPkg = pkgIdx;   // cooked BPs keep the SCS; wire UBlueprint to it
         }
-        if (bgcPkg == 0) { Log.Error("no BlueprintGeneratedClass export found"); return; }
+        if (bgcPkg == 0) { Log.Warning("BuildCore: no BlueprintGeneratedClass export in {Bp}", bpName); return false; }
 
         // 4) Imports we need for the editor exports (appended).
         int enginePkg = spw.AddImport("/Script/CoreUObject", "Package", 0, "/Script/Engine");
@@ -947,7 +1204,10 @@ public static class BlueprintGraphBuilder
 
         // 6) Build payloads.
         var eventGuid = FGuid16.NewGuid();
-        var ubPayload = BuildBlueprint(spw, classGeneratedBy: bgcPkg, parentClass: bgcSuper, generatedClass: bgcPkg, eventGraph: egPkg);
+        var recoveredVars = RecoverSimpleVariables(pkg, bgcPkg);
+        if (recoveredVars.Count > 0) Log.Information("Recovered {N} variable(s) for {Bp}: {V}", recoveredVars.Count, bpName,
+            string.Join(", ", recoveredVars.Select(v => $"{v.name}:{v.category}")));
+        var ubPayload = BuildBlueprint(spw, classGeneratedBy: bgcPkg, parentClass: bgcSuper, generatedClass: bgcPkg, eventGraph: egPkg, vars: recoveredVars, scs: scsPkg);
         var egPayload = BuildEdGraph(spw, schema: impSchema, node: evPkg);
         var evPayload = BuildEventNode(spw, ownerPkg: evPkg, actorClass: impActor, nodeGuid: eventGuid);
 
@@ -956,9 +1216,10 @@ public static class BlueprintGraphBuilder
         spw.AddExport("EventGraph", impEdGraph, 0, ubPkg, egPayload, objectFlags: 0x1);                 // EdGraph (outer=Blueprint)
         spw.AddExport("K2Node_Event_0", impK2Event, 0, egPkg, evPayload, objectFlags: 0x1);             // K2Node_Event (outer=EventGraph)
 
-        var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, bpName + ".uasset");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outFile))!);
         spw.Write(outFile);
         Log.Information("Built editor blueprint -> {Out} (BGC pkgidx {B}, +UBlueprint/EventGraph/K2Node_Event)", outFile, bgcPkg);
+        return true;
     }
 
     /// <summary>Zero bCooked in a UClass-family payload so the editor takes the non-cooked load path.
@@ -980,7 +1241,8 @@ public static class BlueprintGraphBuilder
         else Log.Warning("bCooked patch skipped (matches={N})", count);
     }
 
-    private static byte[] BuildBlueprint(SynthPackageWriter spw, int classGeneratedBy, int parentClass, int generatedClass, int eventGraph)
+    private static byte[] BuildBlueprint(SynthPackageWriter spw, int classGeneratedBy, int parentClass, int generatedClass, int eventGraph,
+        IReadOnlyList<(string name, string category)>? vars = null, int scs = 0)
     {
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
         var t = new TaggedPropertyWriter(w, spw.Name);
@@ -989,8 +1251,32 @@ public static class BlueprintGraphBuilder
         t.Int("BlueprintSystemVersion", 2);
         t.GuidStruct("BlueprintGuid", FGuid16.NewGuid());
         t.ObjectArray("UbergraphPages", new[] { eventGraph });
+        if (vars is { Count: > 0 }) t.NewVariables(vars);              // editor My-Blueprint variable list
+        if (scs != 0) t.Object("SimpleConstructionScript", scs);       // surface the cloned component tree (Components panel)
         t.WriteNone();
         w.Flush(); return ms.ToArray();
+    }
+
+    /// <summary>Recover simple value-type variables from a cooked BlueprintGeneratedClass: its class properties are
+    /// exports whose outer is the BGC. Map the cooked property class to a K2 pin category; skip non-POD types
+    /// (object/struct/array/…) and the component object-properties, which need sub-references we don't synthesize yet.</summary>
+    private static List<(string name, string category)> RecoverSimpleVariables(Package pkg, int bgcPkgIndex)
+    {
+        var cat = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["BoolProperty"] = "bool", ["IntProperty"] = "int", ["FloatProperty"] = "float",
+            ["StrProperty"] = "string", ["TextProperty"] = "text", ["NameProperty"] = "name", ["ByteProperty"] = "byte",
+        };
+        var vars = new List<(string, string)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in pkg.ExportMap)
+        {
+            if ((e.OuterIndex?.Index ?? 0) != bgcPkgIndex) continue;   // only the class's own properties
+            if (!cat.TryGetValue(e.ClassName, out var c)) continue;    // simple value types only
+            var n = e.ObjectName.Text;
+            if (seen.Add(n)) vars.Add((n, c));
+        }
+        return vars;
     }
 
     private static byte[] BuildEdGraph(SynthPackageWriter spw, int schema, int node)

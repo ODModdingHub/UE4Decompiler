@@ -29,9 +29,49 @@ public sealed class ContentWriter
     private readonly LevelReconstructor _level = new();
 
     public List<ManifestEntry> Manifest { get; } = new();
+    private readonly object _manifestLock = new();   // pipeline runs Process in parallel
 
     /// <summary>Game-module types referenced by imports, keyed "Module.Name" — for stub generation.</summary>
-    public Dictionary<string, GameStub> GameStubs { get; } = new();
+    public System.Collections.Concurrent.ConcurrentDictionary<string, GameStub> GameStubs { get; } = new();
+
+    /// <summary>Inferred base class for a stub, keyed "Module.Name" -> engine base (e.g. "AActor", "USceneComponent").
+    /// Filled from how a class is actually USED (placed as a level actor / used as a component), which is far more
+    /// reliable than name-suffix heuristics — and getting the actor base right is what lets placed game actors spawn
+    /// without crashing the editor.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, string> StubBaseHints { get; } = new();
+
+    /// <summary>Plugin mount names discovered in the pak (e.g. "CustomMapTools"); each gets a content-only .uplugin
+    /// scaffolded so the editor mounts "/&lt;Name&gt;/" and the plugin's cooked references resolve.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, byte> Plugins { get; } = new();
+
+    /// <summary>Write a content-only .uplugin for every discovered plugin so the editor auto-mounts its content root.
+    /// No "Modules" entry — these are content-only mounts; native /Script modules are handled separately via stubs.</summary>
+    public void ScaffoldPlugins()
+    {
+        foreach (var name in Plugins.Keys)
+        {
+            try
+            {
+                var dir = Path.Combine(_opts.OutputRoot, "Plugins", name);
+                Directory.CreateDirectory(Path.Combine(dir, "Content"));
+                var uplugin = Path.Combine(dir, name + ".uplugin");
+                File.WriteAllText(uplugin,
+                    "{\n" +
+                    "\t\"FileVersion\": 3,\n" +
+                    "\t\"Version\": 1,\n" +
+                    "\t\"VersionName\": \"1.0\",\n" +
+                    $"\t\"FriendlyName\": \"{name}\",\n" +
+                    "\t\"Description\": \"Recovered content-only plugin.\",\n" +
+                    "\t\"Category\": \"Recovered\",\n" +
+                    "\t\"CanContainContent\": true,\n" +
+                    "\t\"IsBetaVersion\": false,\n" +
+                    "\t\"Installed\": false\n" +
+                    "}\n");
+                Log.Information("Scaffolded plugin mount /{Name}/ -> {Up}", name, uplugin);
+            }
+            catch (Exception ex) { Log.Warning(ex, "Failed to scaffold plugin {Name}", name); }
+        }
+    }
 
     // Engine + common engine-plugin script modules the editor already provides; never stub these.
     private static readonly HashSet<string> EngineModules = new(StringComparer.OrdinalIgnoreCase)
@@ -93,8 +133,9 @@ public sealed class ContentWriter
     /// <summary>Process one parsed asset end-to-end, returning the manifest entry (also appended to <see cref="Manifest"/>).</summary>
     public ManifestEntry Process(ParsedAsset asset)
     {
-        var relative = MapToContentPath(asset.File.Path);
-        var outputNoExt = Path.Combine(_opts.ContentRoot, relative);
+        var (mount, diskBase, relative) = MapToMount(asset.File.Path);
+        if (mount != "/Game") Plugins.TryAdd(mount.TrimStart('/'), 0);   // remember plugins to scaffold .uplugin
+        var outputNoExt = Path.Combine(_opts.OutputRoot, diskBase, relative);
         var ext = asset.IsMap ? ".umap" : ".uasset";
         var outputAsset = outputNoExt + ext;
 
@@ -104,7 +145,7 @@ public sealed class ContentWriter
             OutputPath = Path.GetRelativePath(_opts.OutputRoot, outputAsset),
             AssetType = asset.PrimaryType
         };
-        Manifest.Add(entry);
+        lock (_manifestLock) Manifest.Add(entry);
 
         if (asset.Package is Package gpkg) CollectGameTypes(gpkg); // gather game-class refs for --emit-stubs
 
@@ -138,7 +179,7 @@ public sealed class ContentWriter
         // Emit a real editor-loadable uncooked package when the source carries no separate bulk
         // (textures/meshes/sounds need bulk inlining — handled by their reconstructors, not here yet).
         // Otherwise fall back to a structurally-valid placeholder header so the project still opens.
-        var packageName = "/Game/" + relative.Replace('\\', '/');
+        var packageName = mount + "/" + relative.Replace('\\', '/');
         if (asset.IsMap)
         {
             // Maps must NOT go through UncookedPackageWriter: that re-serializes the cooked import table
@@ -148,14 +189,158 @@ public sealed class ContentWriter
             if (!TryWritePlacedMap(asset, outputAsset, packageName, entry))
                 _writer.WriteUAssetHeader(outputAsset, _opts.Game, packageName);
         }
-        else if (asset.PrimaryType is "StaticMesh" && TryWriteRealMesh(asset, outputAsset, packageName, entry))
+        else if (asset.PrimaryType is "StaticMesh" && !string.IsNullOrWhiteSpace(_opts.CubePath))
         {
-            // real-geometry editor mesh written (cube-clone + appended FRawMesh); skip the cooked uncooked write.
+            // Real geometry when it converts; otherwise a loadable cube (never the cooked-mobile package,
+            // which won't render in-editor). Guarantees every mesh is at least a visible placeholder.
+            if (!TryWriteRealMesh(asset, outputAsset, packageName, entry))
+            {
+                var (mp, mn) = ResolveFirstMaterial(asset.Package as Package);
+                var fallbackMats = mp != null && mn != null
+                    ? new List<(string, string, string)> { (mp, mn, mn) } : null;
+                BlueprintGraphBuilder.CloneMesh(_opts.CubePath!, outputAsset,
+                    Path.GetFileNameWithoutExtension(outputAsset), packageName, null, fallbackMats);
+                entry.Note = string.IsNullOrEmpty(entry.Note) ? "cube placeholder (mesh did not convert)"
+                                                              : entry.Note + "; cube placeholder (mesh did not convert)";
+            }
+        }
+        else if (asset.PrimaryType is "Texture2D" && TryWriteRealTexture(asset, outputAsset, packageName, entry))
+        {
+            // editor UTexture2D with decoded PNG source written; skip the cooked uncooked write.
+        }
+        else if (asset.PrimaryType is "Material" or "MaterialInstanceConstant"
+                 && TryWriteMaterialAsset(asset, outputAsset, packageName, entry))
+        {
+            // synth unlit material sampling the asset's first texture written; skip the cooked uncooked write.
+        }
+        else if (!_opts.SkipBlueprints && IsBlueprintPackage(asset) && IsBlueprintReconstructable(asset)
+                 && (_opts.DangerBpGraph || IsOpenSafeBlueprint(asset))
+                 && TryWriteBlueprint(asset, outputAsset, packageName, entry))
+        {
+            // reconstructed editor UBlueprint (+EventGraph) so it's browsable/openable; skip the cooked write.
+            // Default only does simple/open-safe BPs; --dangerously-dump-bpgraph forces all (may crash on open).
         }
         else if (!TryWriteUncooked(asset, outputAsset, entry))
-            _writer.WriteUAssetHeader(outputAsset, _opts.Game, packageName);
+            // No editor-loadable form for this type. Do NOT write a stub header: a half-formed .uasset reads as
+            // "unrecognizable data" and CRASHES the editor when a map references it, whereas simply omitting the
+            // file leaves a harmless broken reference. So skip the write entirely.
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "skipped (no editor-loadable form)"
+                                                          : entry.Note + "; skipped (no editor-loadable form)";
 
         return entry;
+    }
+
+    /// <summary>Decode the cooked texture and write an editor-loadable UTexture2D (PNG source). Returns false if
+    /// the asset has no loadable UTexture2D (caller falls back).</summary>
+    private bool TryWriteRealTexture(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        if (asset.Package is not Package pkg) return false;
+        try
+        {
+            CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D? tex = null;
+            for (var i = 0; i < pkg.ExportMap.Length && tex is null; i++)
+            {
+                if (!pkg.ExportMap[i].ClassName.Contains("Texture2D")) continue;
+                try { tex = pkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D; } catch { }
+            }
+            if (tex is null) return false;
+            if (!Writer.TextureWriter.WriteEditorTexture(tex, outputAsset, Path.GetFileNameWithoutExtension(outputAsset), packageName))
+                return false;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "editor texture (decoded PNG source)"
+                                                          : entry.Note + "; editor texture (decoded PNG source)";
+            return true;
+        }
+        catch (Exception ex) { Log.Warning(ex, "Texture write failed for {Path}", asset.File.Path); return false; }
+    }
+
+    /// <summary>Write a synth unlit material that samples the material's first /Game texture (resolved from the
+    /// cooked import table — works for both UMaterial and MaterialInstanceConstant). Returns false if no texture
+    /// reference is found (caller falls back).</summary>
+    private bool TryWriteMaterialAsset(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        if (asset.Package is not Package pkg) return false;
+        try
+        {
+            // Find a Texture2D import + its outer package path. Prefer /Game textures (we dump those).
+            string? texPkg = null, texName = null, anyPkg = null, anyName = null;
+            foreach (var imp in pkg.ImportMap)
+            {
+                if (imp.ClassName.Text != "Texture2D") continue;
+                var oi = imp.OuterIndex?.Index ?? 0;
+                if (oi >= 0) continue;
+                var pkgPath = pkg.ImportMap[-oi - 1].ObjectName.Text;
+                anyPkg ??= pkgPath; anyName ??= imp.ObjectName.Text;
+                if (pkgPath.StartsWith("/Game/")) { texPkg = pkgPath; texName = imp.ObjectName.Text; break; }
+            }
+            texPkg ??= anyPkg; texName ??= anyName;
+            var shortName = Path.GetFileNameWithoutExtension(outputAsset);
+            if (texPkg is null || texName is null)
+            {
+                // No texture reference: write a valid flat material rather than letting it fall through to an
+                // unparseable placeholder header (which crashes the editor when a map references it).
+                if (!Writer.MaterialWriter.WriteEditorMaterialFlat(outputAsset, shortName, packageName)) return false;
+                entry.Note = string.IsNullOrEmpty(entry.Note) ? "flat material (no texture ref)"
+                                                              : entry.Note + "; flat material (no texture ref)";
+                return true;
+            }
+            if (!Writer.MaterialWriter.WriteEditorMaterial(outputAsset, shortName, packageName, texPkg, texName))
+                return Writer.MaterialWriter.WriteEditorMaterialFlat(outputAsset, shortName, packageName);
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"synth unlit material -> {texName}"
+                                                          : entry.Note + $"; synth unlit material -> {texName}";
+            return true;
+        }
+        catch (Exception ex) { Log.Warning(ex, "Material write failed for {Path}", asset.File.Path); return false; }
+    }
+
+    /// <summary>Resolve a mesh's first material reference from the cooked import table — the /Game package path +
+    /// object name of the MaterialInstanceConstant/Material the StaticMaterials slot points at. The pipeline dumps
+    /// a synth material at that path, so redirecting the cube's slot here makes the mesh render with its texture.</summary>
+    private static (string? pkg, string? name) ResolveFirstMaterial(Package? pkg)
+    {
+        if (pkg is null) return (null, null);
+        (string p, string n)? any = null;
+        foreach (var imp in pkg.ImportMap)
+        {
+            var cls = imp.ClassName.Text;
+            if (cls is not ("MaterialInstanceConstant" or "Material" or "MaterialInstanceDynamic")) continue;
+            var oi = imp.OuterIndex?.Index ?? 0;
+            if (oi >= 0) continue;
+            var p = pkg.ImportMap[-oi - 1].ObjectName.Text;
+            any ??= (p, imp.ObjectName.Text);
+            if (p.StartsWith("/Game/")) return (p, imp.ObjectName.Text);   // prefer a project material (we dump those)
+        }
+        return any is { } a ? (a.p, a.n) : (null, null);
+    }
+
+    /// <summary>Resolve the mesh's materials in SLOT ORDER (StaticMaterials[i]) -> (packagePath, name, slotName),
+    /// so multi-material meshes get one StaticMaterials slot per section. A null/unresolved slot falls back to the
+    /// engine DefaultMaterial so the slot count still matches the FRawMesh FaceMaterialIndices.</summary>
+    internal static List<(string pkg, string name, string slot)> ResolveMeshMaterials(
+        CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh sm, Package pkg)
+    {
+        var list = new List<(string, string, string)>();
+        var slots = sm.StaticMaterials;
+        if (slots is null) return list;
+        // Map material object name -> its /Game package path FROM THE IMPORT TABLE (these are the editor
+        // "/Game/..." paths; ResolvedObject.Outer.Name returns the cooked "Pavlov/Content/..." which won't resolve).
+        var byName = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var imp in pkg.ImportMap)
+        {
+            if (imp.ClassName.Text is not ("MaterialInstanceConstant" or "Material" or "MaterialInstanceDynamic")) continue;
+            var oi = imp.OuterIndex?.Index ?? 0;
+            if (oi >= 0) continue;
+            byName[imp.ObjectName.Text] = pkg.ImportMap[-oi - 1].ObjectName.Text;   // package path "/Game/.../MI_X"
+        }
+        foreach (var s in slots)
+        {
+            var name = s.MaterialInterface?.Name.Text;
+            var slot = s.MaterialSlotName.Text;
+            if (!string.IsNullOrEmpty(name) && byName.TryGetValue(name!, out var p))
+                list.Add((p, name!, string.IsNullOrEmpty(slot) ? name! : slot));
+            else
+                list.Add(("/Engine/EngineMaterials/DefaultMaterial", "DefaultMaterial", string.IsNullOrEmpty(slot) ? "Material" : slot));
+        }
+        return list;
     }
 
     /// <summary>When --cube is configured, emit a real-geometry editor StaticMesh (engine-cube clone with the
@@ -176,8 +361,17 @@ public sealed class ContentWriter
             }
             if (sm is null || !sm.TryConvert(out var cm) || cm.LODs.Count == 0) return false;
 
-            var blob = MeshWriter.BuildFRawMesh(cm.LODs[0]);
-            BlueprintGraphBuilder.CloneMesh(_opts.CubePath!, outputAsset, sm.Name, packageName, blob);
+            // Resolve materials FIRST so the FRawMesh's per-face slot indices can be clamped to the actual slot count.
+            var mats = ResolveMeshMaterials(sm, pkg);
+            if (mats.Count == 0)
+            {
+                var (mp, mn) = ResolveFirstMaterial(pkg);
+                if (mp != null && mn != null) mats.Add((mp, mn, mn));
+            }
+            var slotCount = mats.Count > 0 ? mats.Count : 1;   // cube fallback keeps 1 slot when no materials
+            var blob = MeshWriter.BuildFRawMesh(cm.LODs[0], slotCount);
+            BlueprintGraphBuilder.CloneMesh(_opts.CubePath!, outputAsset, sm.Name, packageName, blob,
+                mats.Count > 0 ? mats : null);
             entry.Note = string.IsNullOrEmpty(entry.Note) ? "real-geometry editor mesh"
                                                           : entry.Note + "; real-geometry editor mesh";
             return true;
@@ -190,9 +384,86 @@ public sealed class ContentWriter
     }
 
     /// <summary>Write a genuine uncooked .uasset by relocating the real payloads. Returns false if ineligible.</summary>
+    /// <summary>A blueprint asset is a package whose primary export is a BlueprintGeneratedClass (cooked BPs carry
+    /// the runtime class but the cooker stripped the editor UBlueprint).</summary>
+    private static bool IsBlueprintPackage(ParsedAsset asset)
+    {
+        if (asset.Package is not Package pkg) return false;
+        foreach (var e in pkg.ExportMap)
+            if (e.ClassName == "BlueprintGeneratedClass") return true;
+        return false;
+    }
+
+    /// <summary>A reconstructed BP only loads safely when its NATIVE dependencies resolve in the editor. The killer is
+    /// a game-native module (/Script/Pavlov*): its UClass/UEnum won't exist, so the editor null-derefs on the
+    /// content-browser scan (unresolvable ParentClass). Content references (/Game, /Engine, and now plugin mounts like
+    /// /CustomMapTools that we scaffold) are fine even if a given asset is missing — a valid mount root only yields a
+    /// broken-ref warning, not a crash. So gate purely on /Script roots: allow engine modules, reject game ones
+    /// (those need --emit-stubs + a compiled project). Everything else falls back to the safe cooked write.</summary>
+    private bool IsBlueprintReconstructable(ParsedAsset asset)
+    {
+        if (asset.Package is not Package pkg) return false;
+        // When stubs are emitted, every referenced game /Script module gets a compilable stub UCLASS/UENUM/USTRUCT,
+        // so the BP's ParentClass/imports resolve and the content-browser scan is safe -> reconstruct all of them.
+        if (_opts.EmitStubs) return true;
+        foreach (var imp in pkg.ImportMap)
+        {
+            if (imp.ClassName.Text != "Package") continue;             // only top-level package refs
+            var p = imp.ObjectName.Text;
+            if (!p.StartsWith("/Script/")) continue;                   // content root (/Game, /Engine, /<plugin>) -> ok
+            if (!EngineModules.Contains(p["/Script/".Length..]))
+                return false;                                          // game-native module -> would crash without a stub
+        }
+        return true;
+    }
+
+    /// <summary>The cooked-guts clone opens cleanly only for SIMPLE blueprints. Complex ones (lots of functions/
+    /// bytecode, big graphs) and special asset types carry cooked-only internals that make the BP editor recurse and
+    /// crash on open. So the default reconstructs only blueprints that are: a plain BlueprintGeneratedClass (not
+    /// Widget/Anim — those need their own asset type + tree), with few function exports and a small export table
+    /// (data/config/interface/simple-actor BPs). The rest stay cooked-safe unless --dangerously-dump-bpgraph is set.</summary>
+    private static bool IsOpenSafeBlueprint(ParsedAsset asset)
+    {
+        if (asset.Package is not Package pkg) return false;
+        int funcs = 0;
+        foreach (var e in pkg.ExportMap)
+        {
+            var c = e.ClassName;
+            if (c is "WidgetBlueprintGeneratedClass" or "AnimBlueprintGeneratedClass") return false;  // need WidgetBlueprint/AnimBlueprint
+            if (c == "Function") funcs++;
+        }
+        return pkg.ExportMap.Length <= 24 && funcs <= 6;   // simple BPs only; complex bytecode graphs crash on open
+    }
+
+    /// <summary>Reconstruct an editor-openable UBlueprint (+EventGraph) from the cooked BP so it shows in the content
+    /// browser. Falls back (returns false) on any failure -> plain uncooked write.</summary>
+    private bool TryWriteBlueprint(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        if (asset.Package is not Package) return false;
+        try
+        {
+            var parts = _provider.SavePackage(asset.File.Path);
+            var head = parts.FirstOrDefault(p => p.Key.EndsWith(".uasset") || p.Key.EndsWith(".umap")).Value
+                       ?? parts.Values.First();
+            var uexp = parts.FirstOrDefault(p => p.Key.EndsWith(".uexp")).Value;
+            var combined = uexp is null ? head : Concat(head, uexp);
+
+            if (!BlueprintGraphBuilder.BuildCore(combined, Path.GetFileNameWithoutExtension(outputAsset), packageName, outputAsset))
+                return false;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "reconstructed editor blueprint (UBlueprint+EventGraph)"
+                                                          : entry.Note + "; reconstructed editor blueprint";
+            return true;
+        }
+        catch (Exception ex) { Log.Warning(ex, "Blueprint reconstruct failed for {Path}", asset.File.Path); return false; }
+    }
+
     private bool TryWriteUncooked(ParsedAsset asset, string outputAsset, ManifestEntry entry)
     {
         if (asset.Package is not Package pkg) return false;                 // IoStore not supported by writer
+        // A blueprint that wasn't reconstructed above is NOT open-safe: a plain cooked BP (BlueprintGeneratedClass
+        // with no editor UBlueprint) CRASHES the editor when opened/scanned (deep recursion in CoreUObject). Skip it
+        // entirely — a missing asset is a harmless broken reference; a half-formed cooked BP is a crash.
+        if (IsBlueprintPackage(asset)) return false;
         if (!_opts.ForceWrite && !UncookedPackageWriter.IsPackageEligible(pkg)) return false; // [9.1] whitelist (bypassed by --force-write)
 
         try
@@ -236,9 +507,18 @@ public sealed class ContentWriter
             var combined = uexp is null ? head : Concat(head, uexp);
 
             var targetShort = Path.GetFileNameWithoutExtension(outputAsset);
+            // Record the engine base each placed game class needs (actor->AActor, component->USceneComponent) so the
+            // stub generator emits a spawnable class instead of a UObject the editor crashes trying to place.
+            void OnGameClass(string scriptPkg, string cls, string baseClass)
+            {
+                if (!scriptPkg.StartsWith("/Script/", StringComparison.Ordinal)) return;
+                var module = scriptPkg["/Script/".Length..];
+                if (EngineModules.Contains(module)) return;       // real engine class, no stub needed
+                StubBaseHints[$"{module}.{cls}"] = baseClass;
+            }
             BlueprintGraphBuilder.PlaceActorsCore(combined, Path.GetFileNameWithoutExtension(asset.File.Path),
                 File.ReadAllBytes(_opts.MapTemplate!), outputAsset, targetShort, packageName,
-                _opts.CubePath, _opts.ContentRoot);
+                _opts.CubePath, _opts.ContentRoot, OnGameClass);
 
             entry.Note = string.IsNullOrEmpty(entry.Note) ? "placed-actor editor map"
                                                           : entry.Note + "; placed-actor editor map";
@@ -310,14 +590,31 @@ public sealed class ContentWriter
     /// Map a CUE4Parse virtual path ("GameName/Content/Foo/Bar.uasset") to a Content-relative
     /// path without extension ("Foo/Bar"). Falls back to a flattened path if no /Content/ segment.
     /// </summary>
-    public static string MapToContentPath(string virtualPath)
+    public static string MapToContentPath(string virtualPath) => MapToMount(virtualPath).relative;
+
+    /// <summary>Resolve a pak virtual path to its editor mount: game content -> ("/Game", "Content", rest) but plugin
+    /// content "Foo/Plugins/&lt;Name&gt;/Content/rest" -> ("/&lt;Name&gt;", "Plugins/&lt;Name&gt;/Content", rest).
+    /// Preserving the plugin mount means cooked references like "/CustomMapTools/Blueprints/X" resolve in-editor
+    /// (flattening them all into /Game breaks those refs and collides folders).</summary>
+    public static (string mount, string diskBase, string relative) MapToMount(string virtualPath)
     {
         var noExt = virtualPath.SubstringBeforeLast('.');
+        var pIdx = noExt.IndexOf("/Plugins/", StringComparison.OrdinalIgnoreCase);
+        if (pIdx >= 0)
+        {
+            var afterPlugins = noExt[(pIdx + "/Plugins/".Length)..];        // <Name>[/Sub]/Content/<rest>
+            var cIdx = afterPlugins.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
+            if (cIdx >= 0)
+            {
+                var pluginSeg = afterPlugins[..cIdx];                        // <Name> or nested dir
+                var name = pluginSeg.Contains('/') ? pluginSeg[(pluginSeg.LastIndexOf('/') + 1)..] : pluginSeg;
+                var rest = afterPlugins[(cIdx + "/Content/".Length)..];
+                if (!string.IsNullOrEmpty(name))
+                    return ("/" + name, Path.Combine("Plugins", name, "Content"), rest);
+            }
+        }
         var idx = noExt.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-            return noExt[(idx + "/Content/".Length)..];
-
-        // Plugin content like "Foo/Plugins/Bar/Content/..." handled above; otherwise keep tail.
-        return noExt.TrimStart('/');
+        var relative = idx >= 0 ? noExt[(idx + "/Content/".Length)..] : noExt.TrimStart('/');
+        return ("/Game", "Content", relative);
     }
 }

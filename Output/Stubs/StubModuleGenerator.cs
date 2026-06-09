@@ -21,14 +21,17 @@ namespace UE4Decompiler.Output.Stubs;
 public sealed class StubModuleGenerator
 {
     private readonly Dictionary<string, char> _sdkPrefix; // bareName -> 'A'/'U'/'F'/'E'
+    private IReadOnlyDictionary<string, string> _baseHints = new Dictionary<string, string>(); // "Module.Name" -> engine base
 
     public StubModuleGenerator(string? sdkDumpDir)
     {
         _sdkPrefix = sdkDumpDir is not null ? LoadSdkPrefixes(sdkDumpDir) : new();
     }
 
-    public void Generate(string outputRoot, IReadOnlyCollection<GameStub> stubs)
+    public void Generate(string outputRoot, IReadOnlyCollection<GameStub> stubs,
+        IReadOnlyDictionary<string, string>? baseHints = null)
     {
+        _baseHints = baseHints ?? new Dictionary<string, string>();
         if (stubs.Count == 0) { Log.Information("--emit-stubs: no game-module types referenced; nothing to generate."); return; }
 
         var uproject = Directory.EnumerateFiles(outputRoot, "*.uproject").FirstOrDefault();
@@ -103,7 +106,11 @@ public sealed class StubModuleGenerator
                     h.AppendLine($"USTRUCT(BlueprintType)").AppendLine($"struct {StructCpp(t.Name)} {{ GENERATED_BODY() }};").AppendLine();
                     structCount++; break;
                 default: // Class
-                    var (cpp, baseClass) = ResolveClass(t.Name);
+                    string cpp, baseClass;
+                    if (_baseHints.TryGetValue($"{module}.{t.Name}", out var hintBase))
+                        (cpp, baseClass) = (hintBase[0] + t.Name, hintBase);   // base inferred from actual usage
+                    else
+                        (cpp, baseClass) = ResolveClass(t.Name);               // fall back to name-suffix heuristic
                     h.AppendLine($"UCLASS(Blueprintable)").AppendLine($"class {cpp} : public {baseClass} {{ GENERATED_BODY() }};").AppendLine();
                     report.AppendLine($"  [{module}] class {cpp} : {baseClass}");
                     classCount++; break;

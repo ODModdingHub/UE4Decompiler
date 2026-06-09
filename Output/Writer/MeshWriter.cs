@@ -8,13 +8,18 @@ namespace UE4Decompiler.Output.Writer;
 
 public static class MeshWriter
 {
-    public static byte[] BuildFRawMesh(CStaticMeshLod lod)
+    /// <param name="materialSlotCount">Number of StaticMaterials slots the written mesh will have. Per-face material
+    /// indices are clamped to [0, slotCount-1]: a section whose MaterialIndex exceeds the slot count would make the
+    /// editor's scene proxy read StaticMaterials out of bounds when the mesh is placed in a level -> access violation
+    /// reading a garbage address (crashes only the maps that place such a mesh). 0 = no clamp (single-slot fallback).</param>
+    public static byte[] BuildFRawMesh(CStaticMeshLod lod, int materialSlotCount = 0)
     {
         using var ms = new MemoryStream();
         using var w = new FArchiveWriter(ms);
 
         var verts = lod.Verts!;
         var src = lod.Indices!.Value;
+        int maxSlot = materialSlotCount > 0 ? materialSlotCount - 1 : 0;
 
         // Fix inside-out / angle-only visibility by flipping triangle winding:
         // 0,1,2 -> 0,2,1
@@ -24,17 +29,31 @@ public static class MeshWriter
         {
             indices[i + 0] = (int)src[i + 0];
             indices[i + 1] = (int)src[i + 1];
-            indices[i + 2] = (int)src[i + 1];
+            indices[i + 2] = (int)src[i + 2];
         }
 
         int numWedges = indices.Length;
         int numTris = numWedges / 3;
 
+        // Per-triangle material slot index from the mesh sections, so multi-material meshes show the right
+        // texture per section (instead of slot 0 on everything). Triangle order matches src triangle order.
+        var faceMat = new int[numTris];
+        var sections = lod.Sections?.Value;
+        if (sections != null)
+            foreach (var s in sections)
+            {
+                int firstTri = s.FirstIndex / 3, slot = s.MaterialIndex < 0 ? 0 : s.MaterialIndex;
+                if (slot > maxSlot) slot = maxSlot;     // never reference a slot the StaticMaterials array lacks
+                for (int t = firstTri; t < firstTri + s.NumFaces && t < numTris; t++) faceMat[t] = slot;
+            }
+        Log.Information("FaceMat: {Secs} section(s), distinct slots [{Slots}] over {T} tris",
+            sections?.Length ?? 0, string.Join(",", faceMat.Distinct().OrderBy(x => x)), numTris);
+
         w.Write(1);
         w.Write(0);
 
         w.Write(numTris);
-        for (int i = 0; i < numTris; i++) w.Write(0);
+        for (int i = 0; i < numTris; i++) w.Write(faceMat[i]);
 
         w.Write(numTris);
         for (int i = 0; i < numTris; i++) w.Write(0u);
