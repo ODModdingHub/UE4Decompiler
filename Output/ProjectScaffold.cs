@@ -119,7 +119,13 @@ public sealed class ProjectScaffold
                 var sub = key[(key.IndexOf("/Config/", StringComparison.OrdinalIgnoreCase) + "/Config/".Length)..];
                 var dest = Path.Combine(_opts.OutputRoot, "Config", sub.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                File.WriteAllBytes(dest, _provider.SaveAsset(key));
+                var bytes = _provider.SaveAsset(key);
+                // DefaultEngine.ini overrides core engine classes to game natives (LocalPlayerClassName=
+                // /Script/Pavlov.PavlovLocalPlayer, GlobalDefaultGameMode=..., GameInstanceClass=...). These load at
+                // editor startup before anything can fix them -> instant crash. Reset them to engine defaults.
+                if (Path.GetFileName(dest).Equals("DefaultEngine.ini", StringComparison.OrdinalIgnoreCase))
+                    bytes = Encoding.UTF8.GetBytes(SanitizeEngineIni(Encoding.UTF8.GetString(bytes)));
+                File.WriteAllBytes(dest, bytes);
                 written++;
             }
             catch (Exception ex)
@@ -129,6 +135,41 @@ public sealed class ProjectScaffold
         }
         Log.Information("Extracted {N} real config .ini file(s)", written);
         return written > 0;
+    }
+
+    /// <summary>Reset DefaultEngine.ini's core-class overrides (which point at game-native /Script classes) back to
+    /// engine defaults so the editor doesn't crash at startup loading classes that don't exist in a stock engine.</summary>
+    private static readonly (string key, string engineDefault)[] EngineClassDefaults =
+    {
+        ("LocalPlayerClassName", "/Script/Engine.LocalPlayer"),
+        ("GameUserSettingsClassName", "/Script/Engine.GameUserSettings"),
+        ("PhysicsCollisionHandlerClassName", "/Script/Engine.PhysicsCollisionHandler"),
+        ("LevelScriptActorClassName", "/Script/Engine.LevelScriptActor"),
+        ("GameViewportClientClassName", "/Script/Engine.GameViewportClient"),
+        ("GameInstanceClass", "/Script/Engine.GameInstance"),
+        ("GlobalDefaultGameMode", "/Script/Engine.GameModeBase"),
+        ("GlobalDefaultServerGameMode", "/Script/Engine.GameModeBase"),
+    };
+
+    internal static string SanitizeEngineIni(string content)
+    {
+        var lines = content.Replace("\r\n", "\n").Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var eq = line.IndexOf('=');
+            if (eq <= 0) continue;
+            var key = line[..eq].Trim();
+            foreach (var (k, def) in EngineClassDefaults)
+            {
+                if (!key.Equals(k, StringComparison.OrdinalIgnoreCase)) continue;
+                var val = line[(eq + 1)..].Trim();
+                if (!val.StartsWith("/Script/Engine.", StringComparison.OrdinalIgnoreCase))   // already engine? leave
+                    lines[i] = $"{k}={def}";
+                break;
+            }
+        }
+        return string.Join("\n", lines);
     }
 
     private void WriteUProject()

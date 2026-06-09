@@ -53,9 +53,36 @@ public static class NodePayloadWalker
         }
     }
 
+    /// <summary>Walk the tagged-property stream and return the byte span [start,end) of the first property whose
+    /// name index == targetNameIdx (the full tag header + value). Returns (-1,-1) if not found. Used to splice a
+    /// rebuilt StaticMaterials array into a cloned StaticMesh export without disturbing its other properties.</summary>
+    public static (int start, int end) FindPropertySpan(byte[] p, int o, int noneIdx, int targetNameIdx)
+    {
+        while (true)
+        {
+            int propStart = o;
+            int nameIdx = BitConverter.ToInt32(p, o);
+            o += 8;
+            if (nameIdx == noneIdx) return (-1, -1);
+            int typeIdx = BitConverter.ToInt32(p, o); o += 8;
+            int size = BitConverter.ToInt32(p, o); o += 4;
+            o += 4;                              // ArrayIndex
+            o = SkipTypeTagData(p, o, typeIdx);
+            o += 1;                              // HasPropertyGuid
+            o += size;                           // value
+            if (nameIdx == targetNameIdx) return (propStart, o);
+        }
+    }
+
     // Type-specific tag data sizes keyed by the type-name index. Caller sets these from the package name table.
-    public static int StructPropertyIdx = -1, BoolPropertyIdx = -1, BytePropertyIdx = -1,
-        EnumPropertyIdx = -1, ArrayPropertyIdx = -1, SetPropertyIdx = -1, MapPropertyIdx = -1;
+    // [ThreadStatic] so concurrent pipeline workers don't clobber each other's per-package indices.
+    [ThreadStatic] public static int StructPropertyIdx;
+    [ThreadStatic] public static int BoolPropertyIdx;
+    [ThreadStatic] public static int BytePropertyIdx;
+    [ThreadStatic] public static int EnumPropertyIdx;
+    [ThreadStatic] public static int ArrayPropertyIdx;
+    [ThreadStatic] public static int SetPropertyIdx;
+    [ThreadStatic] public static int MapPropertyIdx;
 
     private static int SkipTypeTagData(byte[] p, int o, int typeIdx)
     {

@@ -33,6 +33,9 @@ public static class Program
         [Option("skip-blueprints", HelpText = "Emit blueprint stubs instead of attempting graph reconstruction.")]
         public bool SkipBlueprints { get; set; }
 
+        [Option("dangerously-dump-bpgraph", HelpText = "Reconstruct EVERY blueprint by cloning its cooked guts + appending a graph. Shows full data but the BP editor CRASHES opening complex/widget BPs (cooked-only internals). Default only reconstructs simple, open-safe BPs.")]
+        public bool DangerouslyDumpBpGraph { get; set; }
+
         [Option("full-recovery", HelpText = "Emit full Kismet bytecode + anim-graph ordering into JSON for the editor re-import commandlet.")]
         public bool FullRecovery { get; set; }
 
@@ -117,6 +120,15 @@ public static class Program
         [Option("gen-mesh-all", HelpText = "Generate real meshes for every loadable StaticMesh.")]
 public bool GenMeshAll { get; set; }
 
+        [Option("tex-max", Default = 1024, HelpText = "Max texture source dimension; decodes the largest mip <= this (default 1024). Smaller = much faster dump + smaller assets.")]
+        public int TexMax { get; set; }
+
+        [Option("gen-tex", HelpText = "Dev: build one editor texture from the first pak texture whose path contains this substring. Writes to --output.")]
+        public string? GenTex { get; set; }
+
+        [Option("gen-mat", HelpText = "Dev: clone the material template (--template) pointing at a texture (--reskin-path = /Game tex pkg, --reskin-name = tex name). Writes to --output.")]
+        public string? GenMat { get; set; }
+
         [Option("call-message", Default = "reconstructed", HelpText = "PrintString message for --inject-call.")]
         public string? CallMessage { get; set; }
 
@@ -162,6 +174,16 @@ public bool GenMeshAll { get; set; }
         if (!string.IsNullOrWhiteSpace(o.DumpPackage))
         {
             Output.Writer.WriterSelfTest.DumpPackage(o.DumpPackage);
+            return 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(o.GenMat))
+        {
+            // --gen-mat <materialShortName>  --reskin-path <texture /Game pkg path>  --reskin-name <texture object name>
+            var outFile = Path.Combine(Path.GetFullPath(o.Output), o.GenMat + ".uasset");
+            Directory.CreateDirectory(Path.GetFullPath(o.Output));
+            Output.Writer.MaterialWriter.WriteEditorMaterial(outFile, o.GenMat, "/Game/" + o.GenMat,
+                o.ReskinPath ?? "/Game/DummySpriteTexture", o.ReskinName ?? "DummySpriteTexture");
             return 0;
         }
 
@@ -309,7 +331,7 @@ public bool GenMeshAll { get; set; }
                 continue;
             }
 
-            var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0]);
+            var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0]);   // this path writes the cube's 1 slot
             var name = sm.Name;
 
             var gamePath =
@@ -341,6 +363,27 @@ public bool GenMeshAll { get; set; }
     return 0;
 }
 
+            if (!string.IsNullOrWhiteSpace(o.GenTex))
+            {
+                Directory.CreateDirectory(Path.GetFullPath(o.Output));
+                var key = extractor.Provider.Files.Keys
+                    .Where(k => k.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) && k.Contains(o.GenTex, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(k => k).FirstOrDefault();
+                if (key is null) { Log.Error("no texture matching '{S}'", o.GenTex); return 1; }
+                var tpkg = (CUE4Parse.UE4.Assets.Package)extractor.Provider.LoadPackage(key);
+                CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D? tex = null;
+                for (var i = 0; i < tpkg.ExportMap.Length && tex == null; i++)
+                {
+                    if (!tpkg.ExportMap[i].ClassName.Contains("Texture2D")) continue;
+                    try { tex = tpkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D; } catch { }
+                }
+                if (tex is null) { Log.Error("no UTexture2D export in {K}", key); return 1; }
+                var gamePath = "/Game/" + key.Substring(key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) + "/Content/".Length).Replace(".uasset", "");
+                var outFile = Path.Combine(Path.GetFullPath(o.Output), tex.Name + ".uasset");
+                Output.Writer.TextureWriter.WriteEditorTexture(tex, outFile, tex.Name, gamePath);
+                return 0;
+            }
+
             if (!string.IsNullOrWhiteSpace(o.GenMeshReal))
             {
                 var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
@@ -356,13 +399,15 @@ public bool GenMeshAll { get; set; }
                 }
                 if (sm == null) { Log.Error("no loadable UStaticMesh export in {K}", key); return 1; }
                 if (!sm.TryConvert(out var cm) || cm.LODs.Count == 0) { Log.Error("mesh convert failed"); return 1; }
-                var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0]);
+                var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0], sm.StaticMaterials?.Length ?? 0);
                 var name = sm.Name;
                 var gamePath = "/Game/" + key.Substring(key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) + "/Content/".Length).Replace(".uasset", "");
                 Directory.CreateDirectory(Path.GetFullPath(o.Output));
                 var outFile = Path.Combine(Path.GetFullPath(o.Output), name + ".uasset");
-                Reconstructors.BlueprintGraphBuilder.CloneMesh(o.Cube ?? "", outFile, name, gamePath, blob);
-                Log.Information("Real mesh -> {Out} (gamePath {G})", outFile, gamePath);
+                var mats = Output.ContentWriter.ResolveMeshMaterials(sm, meshPkg);
+                Reconstructors.BlueprintGraphBuilder.CloneMesh(o.Cube ?? "", outFile, name, gamePath, blob,
+                    materials: mats.Count > 0 ? mats : null);
+                Log.Information("Real mesh -> {Out} (gamePath {G}, {M} material slot(s))", outFile, gamePath, mats.Count);
                 return 0;
             }
 
@@ -413,7 +458,11 @@ public bool GenMeshAll { get; set; }
             }
             var association = VersionDetector.ToEngineAssociation(detectedGame);
 
+            Output.Writer.TextureWriter.MaxDim = o.TexMax > 0 ? o.TexMax : 1024;
             var projectName = SanitizeProjectName(o.Output);
+            // Stubs are what let blueprints that subclass game-native classes reconstruct without crashing, so emit
+            // them whenever we're reconstructing blueprints (unless explicitly disabled via --skip-blueprints).
+            var emitStubs = o.EmitStubs || !o.SkipBlueprints;
             var opts = new DecompileOptions
             {
                 InputPath = o.Input,
@@ -428,6 +477,8 @@ public bool GenMeshAll { get; set; }
                 DryRun = o.DryRun,
                 Verbose = o.Verbose,
                 ProjectName = projectName,
+                EmitStubs = emitStubs,
+                DangerBpGraph = o.DangerouslyDumpBpGraph,
                 MapTemplate = o.Template,
                 CubePath = o.Cube
             };
@@ -439,9 +490,13 @@ public bool GenMeshAll { get; set; }
             var writer = new ContentWriter(opts, extractor.Provider);
             RunPipeline(packages, parser, writer);
 
-            // 6. Optional: generate C++ stub modules for referenced game-native classes.
-            if (o.EmitStubs && !o.DryRun)
-                new Output.Stubs.StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, writer.GameStubs.Values);
+            // 5b. Scaffold a content-only .uplugin for each discovered plugin so the editor mounts "/<Name>/" and the
+            //     plugin's cooked content references (e.g. /CustomMapTools/...) resolve instead of crashing.
+            if (!o.DryRun) writer.ScaffoldPlugins();
+
+            // 6. Generate C++ stub modules for referenced game-native classes (so game-subclassed blueprints resolve).
+            if (emitStubs && !o.DryRun)
+                new Output.Stubs.StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, writer.GameStubs.Values.ToList(), writer.StubBaseHints);
 
             // 7. Manifest + summary.
             if (o.Report && !o.DryRun) WriteReport(opts, writer.Manifest);
@@ -467,15 +522,17 @@ public bool GenMeshAll { get; set; }
             .Start(ctx =>
             {
                 var task = ctx.AddTask("[green]Decompiling assets[/]", maxValue: packages.Count);
-                foreach (var pkg in packages)
+                var manifestLock = new object();
+                var opts = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount) };
+                Parallel.ForEach(packages, opts, pkg =>
                 {
                     try
                     {
                         var parsed = parser.Parse(pkg);
                         if (parsed is null)
                         {
-                            // Parsing failed: record a Failed manifest row by routing a stub through the writer.
-                            writer.Manifest.Add(new ManifestEntry
+                            // Parsing failed: record a Failed manifest row.
+                            lock (manifestLock) writer.Manifest.Add(new ManifestEntry
                             {
                                 VirtualPath = pkg.Path,
                                 OutputPath = "(parse failed)",
@@ -497,7 +554,7 @@ public bool GenMeshAll { get; set; }
                     {
                         task.Increment(1);
                     }
-                }
+                });
             });
     }
 

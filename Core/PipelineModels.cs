@@ -57,6 +57,13 @@ public sealed class DecompileOptions
     public bool NoMediaExport { get; init; }
     public bool DryRun { get; init; }
     public bool Verbose { get; init; }
+    /// <summary>Generate compilable C++ stub modules for referenced game-native classes. When on, blueprints that
+    /// subclass game natives can also be reconstructed (their stubbed ParentClass resolves, so no content-browser
+    /// crash) — at the cost of the project becoming a C++ project that must be compiled before it opens.</summary>
+    public bool EmitStubs { get; init; }
+    /// <summary>Reconstruct EVERY blueprint via the cooked-guts clone (the BP editor crashes opening complex/widget
+    /// ones). When false (default), only simple, open-safe blueprints are reconstructed.</summary>
+    public bool DangerBpGraph { get; init; }
     public string ProjectName { get; init; } = "DecompiledProject";
 
     /// <summary>Empty editor map (.umap) used as the reskin base for in-pipeline actor placement. When set,

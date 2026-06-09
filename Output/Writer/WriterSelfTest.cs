@@ -284,19 +284,81 @@ public static class WriterSelfTest
         try { exports = ((IPackage)pkg).GetExports().ToList(); }
         catch (Exception ex) { Log.Error(ex, "GetExports failed"); return; }
 
-        Log.Information("== {File}: {N} export(s) ==", Path.GetFileName(path), exports.Count);
+        Log.Information("== {File}: {N} export(s) ==  fileLen={Len} bulkStart={Bulk}",
+            Path.GetFileName(path), exports.Count, data.Length, pkg.Summary.BulkDataStartOffset);
+        if (Environment.GetEnvironmentVariable("DUMP_VERSIONS") == "1")
+        {
+            var editorGuid = CUE4Parse.UE4.Versions.FEditorObjectVersion.GUID;
+            var cvs = pkg.Summary.CustomVersionContainer?.Versions;
+            if (cvs != null) foreach (var cv in cvs)
+                Log.Information("  CV {Guid} = {Ver}{Tag}", cv.Key, cv.Version, cv.Key == editorGuid ? "  <-- FEditorObjectVersion (RefactorMeshEditorMaterials=8)" : "");
+        }
+        if (Environment.GetEnvironmentVariable("DUMP_NAMES") == "1")
+            for (var n = 0; n < pkg.NameMap.Length; n++) Log.Information("  NAME[{I}] {S}", n, pkg.NameMap[n].Name);
+        if (Environment.GetEnvironmentVariable("DUMP_IMPORTS") == "1")
+            for (var n = 0; n < pkg.ImportMap.Length; n++)
+                Log.Information("  IMP[-{I}] {Cls} '{Obj}' outer={O}", n + 1, pkg.ImportMap[n].ClassName.Text,
+                    pkg.ImportMap[n].ObjectName.Text, pkg.ImportMap[n].OuterIndex?.Index ?? 0);
+        for (var i = 0; i < pkg.ExportMap.Length; i++)
+        {
+            var ex = pkg.ExportMap[i];
+            Log.Information("  EXP[{I}] {Cls,-22} off={Off} size={Size} (end={End}) flags=0x{F:X}",
+                i, ex.ClassName, ex.SerialOffset, ex.SerialSize, ex.SerialOffset + ex.SerialSize, (uint)ex.ObjectFlags);
+        }
         for (var i = 0; i < exports.Count; i++)
         {
             var e = exports[i];
             Log.Information("EXPORT[{I}] {Name} : {Type}  ({P} props)", i, e.Name, e.ExportType, e.Properties.Count);
-            foreach (var p in e.Properties)
-            {
-                string val;
-                try { val = p.Tag?.ToString() ?? "<null>"; } catch { val = "<err>"; }
-                if (val.Length > 120) val = val[..120] + "…";
-                Log.Information("    .{PN} ({PT}) = {V}", p.Name.Text, p.PropertyType.Text, val);
-            }
+            foreach (var p in e.Properties) DumpProp(p, "    ");
         }
+    }
+
+    private static void DumpProp(CUE4Parse.UE4.Assets.Objects.FPropertyTag p, string indent)
+        => DumpValue($".{p.Name.Text} ({p.PropertyType.Text})", p.Tag, indent);
+
+    private static void DumpValue(string label, CUE4Parse.UE4.Assets.Objects.Properties.FPropertyTagType? tag, string indent)
+    {
+        object? gv = null;
+        try { gv = tag?.GenericValue; } catch { }
+        if (gv is CUE4Parse.UE4.Assets.Objects.FScriptStruct ss) gv = ss.StructType;
+        if (gv is CUE4Parse.UE4.Assets.Objects.FStructFallback sf)
+        {
+            Log.Information("{I}{L} = struct {{", indent, label);
+            foreach (var sp in sf.Properties) DumpProp(sp, indent + "  ");
+            Log.Information("{I}}}", indent);
+            return;
+        }
+        if (gv is CUE4Parse.UE4.Assets.Objects.UScriptArray arr)
+        {
+            Log.Information("{I}{L} = [{N}] {{", indent, label, arr.Properties.Count);
+            for (var i = 0; i < arr.Properties.Count; i++) DumpValue($"[{i}]", arr.Properties[i], indent + "  ");
+            Log.Information("{I}}}", indent);
+            return;
+        }
+        if (gv is CUE4Parse.UE4.Assets.Objects.UScriptMap map)
+        {
+            Log.Information("{I}{L} = map[{N}] {{", indent, label, map.Properties.Count);
+            int k = 0;
+            foreach (var kv in map.Properties)
+            {
+                DumpValue($"key[{k}]", kv.Key, indent + "  ");
+                DumpValue($"val[{k}]", kv.Value, indent + "  ");
+                k++;
+            }
+            Log.Information("{I}}}", indent);
+            return;
+        }
+        if (gv is CUE4Parse.UE4.Objects.Engine.EdGraph.FEdGraphPinType pt)
+        {
+            Log.Information("{I}{L} = PinType {{ Category={C} Sub={S} SubObj={O} Container={Ct} bRef={R} bConst={K} bWeak={W} bWrap={U} }}",
+                indent, label, pt.PinCategory.Text, pt.PinSubCategory.Text, pt.PinSubCategoryObject?.Index ?? 0,
+                pt.ContainerType, pt.bIsReference, pt.bIsConst, pt.bIsWeakPointer, pt.bIsUObjectWrapper);
+            return;
+        }
+        string val;
+        try { val = tag?.ToString() ?? "<null>"; } catch { val = "<err>"; }
+        if (val.Length > 120) val = val[..120] + "…";
+        Log.Information("{I}{L} = {V}", indent, label, val);
     }
 
     /// <summary>Phase-2 round-trip: parse a LOCAL editor .uasset and re-emit it through the uncooked
