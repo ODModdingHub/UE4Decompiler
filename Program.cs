@@ -24,6 +24,9 @@ public static class Program
         [Option("version", HelpText = "UE version hint, e.g. 4.27 or 5.1 (auto-detected if omitted).")]
         public string? Version { get; set; }
 
+        [Option("usmap", HelpText = "Path to a .usmap mappings file — REQUIRED for UE5 unversioned packages (PKG_UnversionedProperties). Dump one from the running game with UE4SS/Dumper-7.")]
+        public string? Usmap { get; set; }
+
         [Option("aes-key", HelpText = "AES-256 key as hex (0x...); omit if unencrypted.")]
         public string? AesKey { get; set; }
 
@@ -62,6 +65,9 @@ public static class Program
 
         [Option("validate-write", HelpText = "Dev: write one package's uncooked .uasset and re-parse it to diff (round-trip test).")]
         public string? ValidateWrite { get; set; }
+
+        [Option("dump-vpath", HelpText = "Dev: load a mounted package by virtual-path substring and dump its exports/properties (works for UE5/Zen via the provider, unlike --dump-package).")]
+        public string? DumpVPath { get; set; }
 
         [Option("list-files", HelpText = "Dev: list mounted virtual paths containing this substring, then exit.")]
         public string? ListFiles { get; set; }
@@ -173,7 +179,9 @@ public bool GenMeshAll { get; set; }
 
         if (!string.IsNullOrWhiteSpace(o.DumpPackage))
         {
-            Output.Writer.WriterSelfTest.DumpPackage(o.DumpPackage);
+            // Honors --version (e.g. 5.1) so UE5 editor ground-truth assets dump correctly; defaults to 4.21.
+            Output.Writer.WriterSelfTest.DumpPackage(o.DumpPackage,
+                VersionDetector.FromHint(o.Version) ?? EGame.GAME_UE4_21);
             return 0;
         }
 
@@ -268,7 +276,26 @@ public bool GenMeshAll { get; set; }
             //    (always needed for --full-recovery; also lets the default BP reconstructor see opcodes).
             var readScript = o.FullRecovery || !o.SkipBlueprints;
             using var extractor = new PakExtractor(o.Input, mountGame, aesKey, readScript);
+            // UE5 unversioned properties need type mappings; without a usmap those packages fail to parse.
+            if (!string.IsNullOrWhiteSpace(o.Usmap))
+            {
+                extractor.Provider.MappingsContainer = new CUE4Parse.MappingsProvider.FileUsmapTypeMappingsProvider(o.Usmap);
+                Log.Information("Loaded usmap mappings from {Path}", o.Usmap);
+            }
+            else if (mountGame >= EGame.GAME_UE5_0)
+                Log.Warning("UE5 target without --usmap: unversioned packages will NOT parse. Dump a .usmap from the running game (UE4SS/Dumper-7) and pass --usmap.");
             var parser = new AssetParser(extractor.Provider);
+
+            if (!string.IsNullOrWhiteSpace(o.DumpVPath))
+            {
+                var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.DumpVPath, StringComparison.OrdinalIgnoreCase) &&
+                    (k.EndsWith(".uasset") || k.EndsWith(".umap")));
+                if (key == null) { Log.Error("no package match for '{S}'", o.DumpVPath); return 1; }
+                Log.Information("Dumping {Key}", key);
+                Output.Writer.WriterSelfTest.DumpLoadedPackage(extractor.Provider.LoadPackage(key));
+                return 0;
+            }
 
             if (!string.IsNullOrWhiteSpace(o.ListFiles))
             {

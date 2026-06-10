@@ -448,7 +448,8 @@ public sealed class ContentWriter
             var uexp = parts.FirstOrDefault(p => p.Key.EndsWith(".uexp")).Value;
             var combined = uexp is null ? head : Concat(head, uexp);
 
-            if (!BlueprintGraphBuilder.BuildCore(combined, Path.GetFileNameWithoutExtension(outputAsset), packageName, outputAsset))
+            // _provider carries ReadScriptData (set when blueprints aren't skipped) -> enables ubergraph recovery.
+            if (!BlueprintGraphBuilder.BuildCore(combined, Path.GetFileNameWithoutExtension(outputAsset), packageName, outputAsset, _provider))
                 return false;
             entry.Note = string.IsNullOrEmpty(entry.Note) ? "reconstructed editor blueprint (UBlueprint+EventGraph)"
                                                           : entry.Note + "; reconstructed editor blueprint";

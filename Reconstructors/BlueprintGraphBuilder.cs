@@ -532,7 +532,6 @@ public static class BlueprintGraphBuilder
     /// /Script/ CallFunctions (skip pure assignments, control flow, and non-script refs).</summary>
     private static List<(string scriptPkg, string cls, string func)> ExtractExecChain(string cookedPath)
     {
-        var result = new List<(string, string, string)>();
         var data = File.ReadAllBytes(cookedPath);
         CUE4Parse.UE4.Assets.Package pkg;
         try
@@ -543,11 +542,22 @@ public static class BlueprintGraphBuilder
             var ar = new FByteArchive(Path.GetFileNameWithoutExtension(cookedPath), data, new VersionContainer(EGame.GAME_UE4_21));
             pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, provider, false);
         }
-        catch (Exception ex) { Log.Error(ex, "cooked parse failed"); return result; }
+        catch (Exception ex) { Log.Error(ex, "cooked parse failed"); return new(); }
+        return ExtractExecChainCore(pkg);
+    }
 
-        var fn = ((CUE4Parse.UE4.Assets.IPackage)pkg).GetExports()
-            .OfType<CUE4Parse.UE4.Objects.UObject.UFunction>()
-            .FirstOrDefault(f => f.Name.StartsWith("ExecuteUbergraph_"));
+    /// <summary>Core of the ubergraph decompile: walk the (already parsed, ReadScriptData=true) package's
+    /// ExecuteUbergraph_* bytecode and return the ordered impure /Script/ function calls. Exports are loaded
+    /// one at a time so a single broken export can't wipe the whole chain.</summary>
+    private static List<(string scriptPkg, string cls, string func)> ExtractExecChainCore(Package pkg)
+    {
+        var result = new List<(string, string, string)>();
+        CUE4Parse.UE4.Objects.UObject.UFunction? fn = null;
+        for (int i = 0; i < pkg.ExportsLazy.Length && fn is null; i++)
+        {
+            if (!pkg.ExportMap[i].ObjectName.Text.StartsWith("ExecuteUbergraph_", StringComparison.Ordinal)) continue;
+            try { fn = pkg.ExportsLazy[i].Value as CUE4Parse.UE4.Objects.UObject.UFunction; } catch { }
+        }
         if (fn?.ScriptBytecode is not { Length: > 0 }) return result;
 
         foreach (var expr in fn.ScriptBytecode)
@@ -1139,7 +1149,17 @@ public static class BlueprintGraphBuilder
         var data = File.ReadAllBytes(cookedPath);
         var bpName = Path.GetFileNameWithoutExtension(cookedPath);             // e.g. BP_HandProxyExample
         var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, bpName + ".uasset");
-        BuildCore(data, bpName, "/Game/" + bpName, outFile);
+        // Dev path: a local provider with ReadScriptData so the ubergraph bytecode is available for graph recovery.
+        CUE4Parse.FileProvider.IFileProvider? provider = null;
+        try
+        {
+            var p = new CUE4Parse.FileProvider.DefaultFileProvider(
+                Path.GetDirectoryName(Path.GetFullPath(cookedPath))!, System.IO.SearchOption.TopDirectoryOnly, false, new VersionContainer(EGame.GAME_UE4_21));
+            p.ReadScriptData = true;
+            provider = p;
+        }
+        catch { /* graph recovery degrades to the bare event node */ }
+        BuildCore(data, bpName, "/Game/" + bpName, outFile, provider);
     }
 
     /// <summary>Reconstruct an editor-openable blueprint from the COMBINED cooked bytes (.uasset+.uexp): clone the
@@ -1147,13 +1167,15 @@ public static class BlueprintGraphBuilder
     /// stripped — UBlueprint (the browsable asset) + EventGraph + a BeginPlay K2Node_Event. Returns false on any
     /// failure so the pipeline can fall back to the plain uncooked write. <paramref name="packagePath"/> is the real
     /// "/Game/..." path so the asset lands at the right place in the content browser.</summary>
-    public static bool BuildCore(byte[] data, string bpName, string packagePath, string outFile)
+    public static bool BuildCore(byte[] data, string bpName, string packagePath, string outFile,
+        CUE4Parse.FileProvider.IFileProvider? provider = null)
     {
         Package pkg;
         try
         {
             var ar = new FByteArchive(bpName, data, new VersionContainer(EGame.GAME_UE4_21));
-            pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
+            // provider (with ReadScriptData=true) enables UFunction bytecode -> ubergraph call-chain recovery.
+            pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, provider, false);
         }
         catch (Exception ex) { Log.Warning(ex, "BuildCore parse failed for {Bp}", bpName); return false; }
 
@@ -1198,27 +1220,91 @@ public static class BlueprintGraphBuilder
         int impK2Event = spw.AddImport("/Script/CoreUObject", "Class", bgPkg, "K2Node_Event");
         int impSchema = spw.AddImport("/Script/CoreUObject", "Class", bgPkg, "EdGraphSchema_K2");
 
-        // 5) Plan export indices (appended after cooked exports).
+        // 5) Recover the event-graph call chain from the cooked ubergraph bytecode (ordered impure /Script/ calls).
+        //    Needs the package parsed with ReadScriptData=true; degrades to a bare BeginPlay node otherwise.
+        var chain = ExtractExecChainCore(pkg);
+        const int MaxChain = 48;                    // keep huge ubergraphs readable (and the editor responsive)
+        if (chain.Count > MaxChain) { Log.Information("Ubergraph chain truncated {N} -> {M} for {Bp}", chain.Count, MaxChain, bpName); chain = chain.Take(MaxChain).ToList(); }
+
+        // 6) Plan export indices (appended after cooked exports): UBlueprint, EventGraph, K2Node_Event, then one
+        //    K2Node_CallFunction per recovered call.
         int next = pkg.ExportMap.Length;            // current export count
         int ubPkg = next + 1, egPkg = next + 2, evPkg = next + 3;
+        var callPkgs = Enumerable.Range(0, chain.Count).Select(i => next + 4 + i).ToArray();
+        var execIds = chain.Select(_ => FGuid16.NewGuid()).ToArray();   // each call's "execute" pin id
+        var thenIds = chain.Select(_ => FGuid16.NewGuid()).ToArray();   // each call's "then" pin id
+        var evThenId = FGuid16.NewGuid();                               // the BeginPlay event's "then" pin id
 
-        // 6) Build payloads.
+        // 7) Build payloads.
         var eventGuid = FGuid16.NewGuid();
         var recoveredVars = RecoverSimpleVariables(pkg, bgcPkg);
         if (recoveredVars.Count > 0) Log.Information("Recovered {N} variable(s) for {Bp}: {V}", recoveredVars.Count, bpName,
             string.Join(", ", recoveredVars.Select(v => $"{v.name}:{v.category}")));
         var ubPayload = BuildBlueprint(spw, classGeneratedBy: bgcPkg, parentClass: bgcSuper, generatedClass: bgcPkg, eventGraph: egPkg, vars: recoveredVars, scs: scsPkg);
-        var egPayload = BuildEdGraph(spw, schema: impSchema, node: evPkg);
-        var evPayload = BuildEventNode(spw, ownerPkg: evPkg, actorClass: impActor, nodeGuid: eventGuid);
+        var egPayload = BuildEdGraph(spw, schema: impSchema, nodes: new[] { evPkg }.Concat(callPkgs).ToArray());
+        var evPayload = BuildEventNode(spw, ownerPkg: evPkg, actorClass: impActor, nodeGuid: eventGuid,
+            thenPinId: evThenId, thenLink: chain.Count > 0 ? (callPkgs[0], execIds[0]) : null);
 
-        // 7) Append editor exports. UBlueprint is the asset (RF_Public|RF_Standalone).
+        // 8) Append editor exports. UBlueprint is the asset (RF_Public|RF_Standalone).
         spw.AddExport(bpName, impBlueprint, 0, 0, ubPayload, objectFlags: 0x1 | 0x2, isAsset: true);   // Blueprint
         spw.AddExport("EventGraph", impEdGraph, 0, ubPkg, egPayload, objectFlags: 0x1);                 // EdGraph (outer=Blueprint)
         spw.AddExport("K2Node_Event_0", impK2Event, 0, egPkg, evPayload, objectFlags: 0x1);             // K2Node_Event (outer=EventGraph)
 
+        // 9) Append the recovered chain as wired K2Node_CallFunction nodes: BeginPlay.then -> call0 -> call1 -> …
+        //    (same synth-node format ReconstructChain proved in-editor). The editor regenerates data pins from the
+        //    FunctionReference on load; unresolvable game functions show as standard "missing function" error nodes.
+        if (chain.Count > 0)
+        {
+            int impCallFunc = spw.AddImport("/Script/CoreUObject", "Class", bgPkg, "K2Node_CallFunction");
+            var pkgImpCache = new Dictionary<string, int>(StringComparer.Ordinal);
+            var classImpCache = new Dictionary<string, int>(StringComparer.Ordinal);
+            int ClassImp(string scriptPkg, string cls)
+            {
+                var key = scriptPkg + "." + cls;
+                if (classImpCache.TryGetValue(key, out var c)) return c;
+                if (!pkgImpCache.TryGetValue(scriptPkg, out var pImp))
+                {
+                    pImp = FindPackageImport(pkg, scriptPkg);
+                    if (pImp == 0) pImp = spw.AddImport("/Script/CoreUObject", "Package", 0, scriptPkg);
+                    pkgImpCache[scriptPkg] = pImp;
+                }
+                c = spw.AddImport("/Script/CoreUObject", "Class", pImp, cls);
+                classImpCache[key] = c; return c;
+            }
+            for (int i = 0; i < chain.Count; i++)
+            {
+                var (scriptPkg, cls, func) = chain[i];
+                int classImp = ClassImp(scriptPkg, cls);
+                var execPin = new SynthPin { OwningNodePkg = callPkgs[i], PinId = execIds[i], PinName = "execute", Category = "exec", SubCategory = "None", Direction = 0 };
+                execPin.LinkedTo.Add(i == 0 ? (evPkg, evThenId) : (callPkgs[i - 1], thenIds[i - 1]));
+                var thenOut = new SynthPin { OwningNodePkg = callPkgs[i], PinId = thenIds[i], PinName = "then", Category = "exec", SubCategory = "None", Direction = 1 };
+                if (i + 1 < chain.Count) thenOut.LinkedTo.Add((callPkgs[i + 1], execIds[i + 1]));
+
+                using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
+                var t = new TaggedPropertyWriter(w, spw.Name);
+                t.Struct("FunctionReference", "MemberReference", () =>
+                {
+                    var inner = new TaggedPropertyWriter(w, spw.Name);
+                    inner.Object("MemberParent", classImp);
+                    inner.Name("MemberName", func);
+                    inner.WriteNone();
+                });
+                t.Int("NodePosX", 360 + i * 300);
+                t.Int("NodePosY", 48);
+                t.GuidStruct("NodeGuid", FGuid16.NewGuid());
+                t.WriteNone();
+                new PinSerializer(w, spw.Name).WriteOwningPins(new[] { execPin, thenOut });
+                w.Flush();
+                spw.AddExportRaw(spw.Name("K2Node_CallFunction"), 7 + i, impCallFunc, 0, 0, egPkg, ms.ToArray(), 0x1, false);
+            }
+            Log.Information("Recovered ubergraph chain for {Bp}: {N} call(s): {C}", bpName, chain.Count,
+                string.Join(" -> ", chain.Select(c => c.func)));
+        }
+
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outFile))!);
         spw.Write(outFile);
-        Log.Information("Built editor blueprint -> {Out} (BGC pkgidx {B}, +UBlueprint/EventGraph/K2Node_Event)", outFile, bgcPkg);
+        Log.Information("Built editor blueprint -> {Out} (BGC pkgidx {B}, +UBlueprint/EventGraph/K2Node_Event{Chain})",
+            outFile, bgcPkg, chain.Count > 0 ? $"/+{chain.Count} CallFunction" : "");
         return true;
     }
 
@@ -1279,18 +1365,19 @@ public static class BlueprintGraphBuilder
         return vars;
     }
 
-    private static byte[] BuildEdGraph(SynthPackageWriter spw, int schema, int node)
+    private static byte[] BuildEdGraph(SynthPackageWriter spw, int schema, IReadOnlyList<int> nodes)
     {
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
         var t = new TaggedPropertyWriter(w, spw.Name);
         t.Object("Schema", schema);
-        t.ObjectArray("Nodes", new[] { node });
+        t.ObjectArray("Nodes", nodes);
         t.GuidStruct("GraphGuid", FGuid16.NewGuid());
         t.WriteNone();
         w.Flush(); return ms.ToArray();   // UEdGraph has no native pin section
     }
 
-    private static byte[] BuildEventNode(SynthPackageWriter spw, int ownerPkg, int actorClass, FGuid16 nodeGuid)
+    private static byte[] BuildEventNode(SynthPackageWriter spw, int ownerPkg, int actorClass, FGuid16 nodeGuid,
+        FGuid16 thenPinId = default, (int nodePkg, FGuid16 pinId)? thenLink = null)
     {
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
         var t = new TaggedPropertyWriter(w, spw.Name);
@@ -1305,12 +1392,12 @@ public static class BlueprintGraphBuilder
         t.Bool("bOverrideFunction", true);
         t.GuidStruct("NodeGuid", nodeGuid);
         t.WriteNone();
-        // UEdGraphNode::Serialize -> SerializeAsOwningNode(Pins): one output exec pin "then".
-        var pins = new PinSerializer(w, spw.Name);
-        pins.WriteOwningPins(new[]
-        {
-            new SynthPin { OwningNodePkg = ownerPkg, PinName = "then", Category = "exec", Direction = 1 /*Output*/ }
-        });
+        // UEdGraphNode::Serialize -> SerializeAsOwningNode(Pins): one output exec pin "then", optionally wired
+        // to the first recovered CallFunction node.
+        var thenPin = new SynthPin { OwningNodePkg = ownerPkg, PinName = "then", Category = "exec", Direction = 1 /*Output*/ };
+        if (!thenPinId.Equals(default(FGuid16))) thenPin.PinId = thenPinId;
+        if (thenLink is { } link) thenPin.LinkedTo.Add(link);
+        new PinSerializer(w, spw.Name).WriteOwningPins(new[] { thenPin });
         w.Flush(); return ms.ToArray();
     }
 }

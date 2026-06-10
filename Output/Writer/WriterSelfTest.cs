@@ -263,7 +263,7 @@ public static class WriterSelfTest
         Log.Information("  tail hex: {V}", sb.ToString());
     }
 
-    public static void DumpPackage(string path)
+    public static void DumpPackage(string path, EGame game = EGame.GAME_UE4_21)
     {
         byte[] data;
         try { data = File.ReadAllBytes(path); }
@@ -273,7 +273,7 @@ public static class WriterSelfTest
         try
         {
             var ar = new CUE4Parse.UE4.Readers.FByteArchive(
-                Path.GetFileNameWithoutExtension(path), data, new VersionContainer(EGame.GAME_UE4_21));
+                Path.GetFileNameWithoutExtension(path), data, new VersionContainer(game));
             pkg = new CUE4Parse.UE4.Assets.Package(ar,
                 (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null,
                 (CUE4Parse.FileProvider.IFileProvider?)null, false);
@@ -305,6 +305,22 @@ public static class WriterSelfTest
             Log.Information("  EXP[{I}] {Cls,-22} off={Off} size={Size} (end={End}) flags=0x{F:X}",
                 i, ex.ClassName, ex.SerialOffset, ex.SerialSize, ex.SerialOffset + ex.SerialSize, (uint)ex.ObjectFlags);
         }
+        for (var i = 0; i < exports.Count; i++)
+        {
+            var e = exports[i];
+            Log.Information("EXPORT[{I}] {Name} : {Type}  ({P} props)", i, e.Name, e.ExportType, e.Properties.Count);
+            foreach (var p in e.Properties) DumpProp(p, "    ");
+        }
+    }
+
+    /// <summary>Dump an already-loaded package (works for BOTH legacy Package and UE5 IoPackage/Zen — only the
+    /// generic IPackage surface is used). Proves unversioned-property reads when a usmap is mounted.</summary>
+    public static void DumpLoadedPackage(CUE4Parse.UE4.Assets.IPackage pkg)
+    {
+        List<UObject> exports;
+        try { exports = pkg.GetExports().ToList(); }
+        catch (Exception ex) { Log.Error(ex, "GetExports failed"); return; }
+        Log.Information("== {Name}: {N} export(s) ==", pkg.Name, exports.Count);
         for (var i = 0; i < exports.Count; i++)
         {
             var e = exports[i];

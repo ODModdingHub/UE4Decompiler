@@ -29,6 +29,17 @@ public sealed class PakExtractor : IDisposable
         else
             throw new FileNotFoundException($"Input path does not exist: {input}");
 
+        // UE5 (and some UE4) containers are Oodle-compressed; load the native oo2core dll (downloaded next to
+        // the exe on first run). Without this every compressed read throws "Oodle ... not initialized".
+        try
+        {
+            string? oodlePath = null;
+            CUE4Parse.Compression.OodleHelper.DownloadOodleDll(ref oodlePath);   // no-op if already present
+            CUE4Parse.Compression.OodleHelper.Initialize(oodlePath);
+            Log.Information("Oodle initialized ({Path})", oodlePath ?? "default");
+        }
+        catch (Exception ex) { Log.Warning("Oodle init failed ({M}); Oodle-compressed entries won't read", ex.Message); }
+
         Log.Information("Mounting containers from {Dir} (engine {Game})", directory, game);
         Provider = new DefaultFileProvider(directory, SearchOption.TopDirectoryOnly, isCaseInsensitive: true,
             new VersionContainer(game));
