@@ -306,6 +306,27 @@ public static class WriterSelfTest
             Log.Information("  EXP[{I}] {Cls,-22} off={Off} size={Size} (end={End}) flags=0x{F:X}",
                 i, ex.ClassName, ex.SerialOffset, ex.SerialSize, ex.SerialOffset + ex.SerialSize, (uint)ex.ObjectFlags);
         }
+        if (Environment.GetEnvironmentVariable("DUMP_EXTBOUNDS_RAW") == "1")
+        {
+            var extIdx = Array.FindIndex(pkg.NameMap, n => n.Name == "ExtendedBounds");
+            var structIdx = Array.FindIndex(pkg.NameMap, n => n.Name == "StructProperty");
+            var boxIdx = Array.FindIndex(pkg.NameMap, n => n.Name == "BoxSphereBounds");
+            foreach (var ex in pkg.ExportMap.Where(e => e.ClassName == "StaticMesh"))
+            {
+                var start = (int)ex.SerialOffset;
+                var end = start + (int)ex.SerialSize;
+                Log.Information("  RAW ExtendedBounds idx={Ext} StructProperty={Struct} BoxSphereBounds={Box}", extIdx, structIdx, boxIdx);
+                for (var p = start; p + 80 < end; p++)
+                {
+                    if (BitConverter.ToInt32(data, p) != extIdx || BitConverter.ToInt32(data, p + 8) != structIdx) continue;
+                    var size = BitConverter.ToInt32(data, p + 16);
+                    var structName = BitConverter.ToInt32(data, p + 24);
+                    var hasGuid = data[p + 48];
+                    Log.Information("  RAW ExtendedBounds @{Rel}: size={Size} structNameIdx={StructName} hasGuid={HasGuid} bytes={Bytes}",
+                        p - start, size, structName, hasGuid, BitConverter.ToString(data, p, Math.Min(128, end - p)));
+                }
+            }
+        }
         for (var i = 0; i < exports.Count; i++)
         {
             var e = exports[i];

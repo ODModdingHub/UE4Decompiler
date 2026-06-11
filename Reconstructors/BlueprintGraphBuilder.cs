@@ -624,7 +624,7 @@ public static class BlueprintGraphBuilder
         // Place actors from any /Script/ module. Game-native actor classes (/Script/Pavlov.*) get a stub, and we
         // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
         // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
-        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName)>();
+        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
         foreach (var e in srcExports)
         {
             // Top-level actor = export whose Outer is the PersistentLevel.
@@ -662,7 +662,7 @@ public static class BlueprintGraphBuilder
                     var mi = rootComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("StaticMesh")?.ResolvedObject;
                     if (mi != null) { meshName = mi.Name.Text; meshPkg = PackagePathOfResolved(mi); }
                 }
-                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName));
+                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, rootComp));
             }
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
@@ -793,6 +793,7 @@ public static class BlueprintGraphBuilder
             using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
                 var t = new TaggedPropertyWriter(w, spw.Name);
                 if (meshObjImp != 0) t.Object("StaticMesh", meshObjImp);
+                WriteLightComponentProperties(t, a.sourceComp, a.compClass);
                 // Mark Movable so the editor never bakes static lighting for these synthesized components —
                 // Lightmass derefs null on placed lights/meshes that lack full bake data (Build Lighting crash).
                 t.ByteEnum("Mobility", "EComponentMobility::Type", "EComponentMobility::Movable");
@@ -868,6 +869,76 @@ public static class BlueprintGraphBuilder
         var slash = path.LastIndexOf('/');
         return dot > slash && dot > 0 ? path.Substring(0, dot) : path;
     }
+
+    private static bool IsLightComponent(string cls) =>
+        cls is "LightComponent" or "PointLightComponent" or "SpotLightComponent" or "RectLightComponent" or
+            "DirectionalLightComponent" or "SkyLightComponent" ||
+        cls.EndsWith("LightComponent", StringComparison.Ordinal);
+
+    private static void WriteLightComponentProperties(TaggedPropertyWriter t, CUE4Parse.UE4.Assets.Exports.UObject src, string compClass)
+    {
+        if (!IsLightComponent(compClass)) return;
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.ULightComponentBase lcb)
+        {
+            t.Float("Intensity", lcb.Intensity);
+            t.ColorStruct("LightColor", lcb.LightColor);
+            t.Bool("CastShadows", lcb.CastShadows != 0);
+        }
+        else
+        {
+            t.Float("Intensity", src.GetOrDefault("Intensity", src.GetOrDefault("Brightness", MathF.PI)));
+            t.ColorStruct("LightColor", src.GetOrDefault("LightColor", new CUE4Parse.UE4.Objects.Core.Math.FColor(255, 255, 255, 255)));
+            t.Bool("CastShadows", src.GetOrDefault("CastShadows", 1u) != 0);
+        }
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.ULightComponent lc)
+        {
+            t.Float("Temperature", lc.Temperature);
+            t.Bool("bUseTemperature", lc.bUseTemperature != 0);
+            t.Float("MaxDrawDistance", lc.MaxDrawDistance);
+            t.Float("MaxDistanceFadeRange", lc.MaxDistanceFadeRange);
+            t.Float("IESBrightnessScale", lc.IESBrightnessScale);
+            t.Bool("bUseIESBrightness", lc.bUseIESBrightness != 0);
+        }
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.ULocalLightComponent local)
+        {
+            t.Float("AttenuationRadius", local.AttenuationRadius);
+            t.ByteEnum("IntensityUnits", "ELightUnits", "ELightUnits::" + local.IntensityUnits);
+        }
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.UPointLightComponent point)
+        {
+            t.Float("LightFalloffExponent", point.LightFalloffExponent);
+            t.Float("SourceRadius", point.SourceRadius);
+            t.Float("SoftSourceRadius", point.SoftSourceRadius);
+            t.Float("SourceLength", point.SourceLength);
+            t.Bool("bUseInverseSquaredFalloff", point.bUseInverseSquaredFalloff);
+        }
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.USpotLightComponent spot)
+        {
+            t.Float("InnerConeAngle", spot.InnerConeAngle);
+            t.Float("OuterConeAngle", spot.OuterConeAngle);
+        }
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.URectLightComponent rect)
+        {
+            t.Float("SourceWidth", rect.SourceWidth);
+            t.Float("SourceHeight", rect.SourceHeight);
+            t.Float("BarnDoorAngle", rect.BarnDoorAngle);
+            t.Float("BarnDoorLength", rect.BarnDoorLength);
+            t.Float("LightFunctionConeAngle", rect.LightFunctionConeAngle);
+        }
+
+        if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.UDirectionalLightComponent dir)
+        {
+            t.Float("LightSourceAngle", dir.LightSourceAngle);
+            t.Float("LightSourceSoftAngle", dir.LightSourceSoftAngle);
+        }
+    }
+
     private static float[] ReadVec(CUE4Parse.UE4.Assets.Exports.UObject obj, string prop, float dflt)
     {
         if (prop == "RelativeRotation")
@@ -926,7 +997,8 @@ public static class BlueprintGraphBuilder
     /// region copy stays valid regardless of our rebuilt header). Produces a loadable placeholder mesh so
     /// map StaticMeshActor refs resolve and render. Returns true on success.</summary>
     public static bool CloneMesh(string cubePath, string outFile, string targetShort, string targetPackagePath,
-        byte[]? realFRawMesh = null, IReadOnlyList<(string pkg, string name, string slot)>? materials = null)
+        byte[]? realFRawMesh = null, IReadOnlyList<(string pkg, string name, string slot)>? materials = null,
+        MeshWriter.MeshBounds? bounds = null)
     {
         byte[] data;
         try { data = File.ReadAllBytes(cubePath); } catch { return false; }
@@ -969,6 +1041,8 @@ public static class BlueprintGraphBuilder
             // = after the cube bulk) + new size + new source Guid (forces RenderData rebuild from real mesh).
             if (realFRawMesh != null && e.ClassName == "StaticMesh")
                 MeshWriter.PatchFRawMeshHeader(payload, realFRawMesh.Length, cubeBulkLen);
+            if (e.ClassName == "StaticMesh" && bounds is { } meshBounds)
+                payload = ReplaceExtendedBounds(payload, meshBounds, spw, CubeName);
             // Replace the cube's single WorldGridMaterial slot with the mesh's real N material slots, so each
             // section renders its own material (FaceMaterialIndices in the FRawMesh select the slot).
             if (e.ClassName == "StaticMesh" && materials is { Count: > 0 })
@@ -980,9 +1054,6 @@ public static class BlueprintGraphBuilder
                 // at this version) so the build maps each render section to its own slot.
                 payload = InjectSectionInfoMaps(payload, materials.Count, spw, CubeName);
             }
-            // Force bAutoComputeLODScreenSize=false on the mesh (auto LOD-distance bugs the visuals).
-            if (e.ClassName == "StaticMesh")
-                payload = InjectBoolProp(payload, "bAutoComputeLODScreenSize", false, spw, CubeName);
             spw.AddExportRaw(e.ObjectName.Index, e.ObjectName.Number, e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0,
                 e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0, payload, (uint)e.ObjectFlags, e.IsAsset);
         }
@@ -1125,6 +1196,51 @@ public static class BlueprintGraphBuilder
         inject.CopyTo(outp, noneStart);
         Array.Copy(payload, noneStart, outp, noneStart + inject.Length, payload.Length - noneStart);
         Log.Information("Injected SectionInfoMap+OriginalSectionInfoMap ({N} section(s), {B}B)", sectionCount, inject.Length);
+        return outp;
+    }
+
+    private static byte[] ReplaceExtendedBounds(byte[] payload, MeshWriter.MeshBounds bounds, SynthPackageWriter spw,
+        Func<string, int> cubeName)
+    {
+        NodePayloadWalker.StructPropertyIdx = cubeName("StructProperty");
+        NodePayloadWalker.BoolPropertyIdx = cubeName("BoolProperty");
+        NodePayloadWalker.BytePropertyIdx = cubeName("ByteProperty");
+        NodePayloadWalker.EnumPropertyIdx = cubeName("EnumProperty");
+        NodePayloadWalker.ArrayPropertyIdx = cubeName("ArrayProperty");
+        NodePayloadWalker.SetPropertyIdx = cubeName("SetProperty");
+        NodePayloadWalker.MapPropertyIdx = cubeName("MapProperty");
+        int noneIdx = cubeName("None");
+        if (noneIdx < 0) { Log.Warning("ReplaceExtendedBounds: no None in name table"); return payload; }
+
+        int start = -1, end = -1;
+        var ebIdx = cubeName("ExtendedBounds");
+        try
+        {
+            if (ebIdx >= 0) (start, end) = NodePayloadWalker.FindPropertySpan(payload, 0, noneIdx, ebIdx);
+            if (start < 0)
+            {
+                var afterNone = NodePayloadWalker.SkipTaggedProperties(payload, 0, noneIdx);
+                start = end = afterNone - 8;
+            }
+        }
+        catch (Exception ex) { Log.Warning(ex, "ReplaceExtendedBounds: tagged-prop walk failed"); return payload; }
+        if (start < 0 || end < start) return payload;
+
+        byte[] replacement;
+        using (var ms = new MemoryStream())
+        {
+            using var w = new FArchiveWriter(ms);
+            new TaggedPropertyWriter(w, spw.Name).BoxSphereBounds("ExtendedBounds", bounds);
+            w.Flush();
+            replacement = ms.ToArray();
+        }
+
+        var outp = new byte[start + replacement.Length + (payload.Length - end)];
+        Array.Copy(payload, 0, outp, 0, start);
+        replacement.CopyTo(outp, start);
+        Array.Copy(payload, end, outp, start + replacement.Length, payload.Length - end);
+        Log.Information("ExtendedBounds: origin ({OX:F2},{OY:F2},{OZ:F2}) extent ({EX:F2},{EY:F2},{EZ:F2}) radius {R:F2}",
+            bounds.OriginX, bounds.OriginY, bounds.OriginZ, bounds.ExtentX, bounds.ExtentY, bounds.ExtentZ, bounds.SphereRadius);
         return outp;
     }
 

@@ -449,8 +449,9 @@ public sealed class ContentWriter
             var mats = ResolveMeshMaterials(sm, asset.Package);
             var slotCount = mats.Count > 0 ? mats.Count : 1;   // cube fallback keeps 1 slot when no materials
             var blob = MeshWriter.BuildFRawMesh(cm.LODs[0], slotCount);
+            var bounds = MeshWriter.CalculateBounds(cm.LODs[0]);
             BlueprintGraphBuilder.CloneMesh(_opts.CubePath!, outputAsset, sm.Name, packageName, blob,
-                mats.Count > 0 ? mats : null);
+                mats.Count > 0 ? mats : null, bounds);
             entry.Note = string.IsNullOrEmpty(entry.Note) ? "real-geometry editor mesh"
                                                           : entry.Note + "; real-geometry editor mesh";
             return true;

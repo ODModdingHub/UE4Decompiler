@@ -381,6 +381,7 @@ public bool GenMeshAll { get; set; }
             }
 
             var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0]);   // this path writes the cube's 1 slot
+            var bounds = Output.Writer.MeshWriter.CalculateBounds(cm.LODs[0]);
             var name = sm.Name;
 
             var gamePath =
@@ -395,7 +396,8 @@ public bool GenMeshAll { get; set; }
                 outFile,
                 name,
                 gamePath,
-                blob
+                blob,
+                bounds: bounds
             );
 
             Log.Information("Real mesh -> {Out} (gamePath {G})", outFile, gamePath);
@@ -438,24 +440,22 @@ public bool GenMeshAll { get; set; }
                 var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
                     k.Contains(o.GenMeshReal, StringComparison.OrdinalIgnoreCase) && k.EndsWith(".uasset"));
                 if (key == null) { Log.Error("no mesh .uasset match for '{S}'", o.GenMeshReal); return 1; }
-                var meshPkg = (CUE4Parse.UE4.Assets.Package)extractor.Provider.LoadPackage(key);
-                CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh? sm = null;
-                for (var i = 0; i < meshPkg.ExportMap.Length && sm == null; i++)
-                {
-                    if (meshPkg.ExportMap[i].ClassName != "StaticMesh") continue;
-                    try { sm = meshPkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh; }
-                    catch (Exception ex) { Log.Warning("mesh export {I} load: {M}", i, ex.Message); }
-                }
+                var meshPkg = extractor.Provider.LoadPackage(key);
+                var exports = ((CUE4Parse.UE4.Assets.IPackage)meshPkg).GetExports();
+                var sm = exports.OfType<CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh>().FirstOrDefault();
                 if (sm == null) { Log.Error("no loadable UStaticMesh export in {K}", key); return 1; }
                 if (!sm.TryConvert(out var cm) || cm.LODs.Count == 0) { Log.Error("mesh convert failed"); return 1; }
                 var blob = Output.Writer.MeshWriter.BuildFRawMesh(cm.LODs[0], sm.StaticMaterials?.Length ?? 0);
+                var bounds = Output.Writer.MeshWriter.CalculateBounds(cm.LODs[0]);
                 var name = sm.Name;
                 var gamePath = "/Game/" + key.Substring(key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) + "/Content/".Length).Replace(".uasset", "");
                 Directory.CreateDirectory(Path.GetFullPath(o.Output));
                 var outFile = Path.Combine(Path.GetFullPath(o.Output), name + ".uasset");
-                var mats = Output.ContentWriter.ResolveMeshMaterials(sm, meshPkg);
+                var mats = meshPkg is CUE4Parse.UE4.Assets.Package legacyPkg
+                    ? Output.ContentWriter.ResolveMeshMaterials(sm, legacyPkg)
+                    : new List<(string pkg, string name, string slot)>();
                 Reconstructors.BlueprintGraphBuilder.CloneMesh(o.Cube ?? "", outFile, name, gamePath, blob,
-                    materials: mats.Count > 0 ? mats : null);
+                    materials: mats.Count > 0 ? mats : null, bounds: bounds);
                 Log.Information("Real mesh -> {Out} (gamePath {G}, {M} material slot(s))", outFile, gamePath, mats.Count);
                 return 0;
             }

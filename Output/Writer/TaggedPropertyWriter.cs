@@ -63,6 +63,20 @@ public sealed class TaggedPropertyWriter
         EndTag(so, vs);
     }
 
+    public void Float(string name, float v)
+    {
+        var so = BeginTag(name, "FloatProperty"); var vs = _w.Position;
+        _w.Write(v);
+        EndTag(so, vs);
+    }
+
+    public void Double(string name, double v)
+    {
+        var so = BeginTag(name, "DoubleProperty"); var vs = _w.Position;
+        _w.Write(v);
+        EndTag(so, vs);
+    }
+
     public void Bool(string name, bool v)
     {
         // Bool value lives in the tag (BoolVal); value section is empty (Size 0).
@@ -111,12 +125,46 @@ public sealed class TaggedPropertyWriter
         EndTag(so, vs);
     }
 
+    public void Byte(string name, byte v)
+    {
+        var so = BeginTag(name, "ByteProperty", () => FName("None")); var vs = _w.Position;
+        _w.Write(v);
+        EndTag(so, vs);
+    }
+
     /// <summary>FGuid struct property (16 bytes) — used for NodeGuid/GraphGuid/BlueprintGuid/PinId.</summary>
     public void GuidStruct(string name, FGuid16 g)
     {
         var so = BeginTag(name, "StructProperty", () => { FName("Guid"); _w.WriteBytes(new byte[16]); }); // StructName=Guid, StructGuid=0
         var vs = _w.Position;
         _w.Write(g.A); _w.Write(g.B); _w.Write(g.C); _w.Write(g.D);
+        EndTag(so, vs);
+    }
+
+    public void ColorStruct(string name, CUE4Parse.UE4.Objects.Core.Math.FColor c)
+    {
+        var so = BeginTag(name, "StructProperty", () => { FName("Color"); _w.WriteBytes(new byte[16]); });
+        var vs = _w.Position;
+        _w.Write(c.B); _w.Write(c.G); _w.Write(c.R); _w.Write(c.A);
+        EndTag(so, vs);
+    }
+
+    public void BoxSphereBounds(string name, MeshWriter.MeshBounds b)
+    {
+        var so = BeginTag(name, "StructProperty", () => { FName("BoxSphereBounds"); _w.WriteBytes(new byte[16]); });
+        var vs = _w.Position;
+        // UE5-saved StaticMesh assets serialize BoxSphereBounds here as a fallback tagged struct, not as the
+        // native 56-byte FBoxSphereBounds3d blob: Origin(Vector), BoxExtent(Vector), SphereRadius(Double), None.
+        Struct("Origin", "Vector", () =>
+        {
+            _w.Write((double)b.OriginX); _w.Write((double)b.OriginY); _w.Write((double)b.OriginZ);
+        });
+        Struct("BoxExtent", "Vector", () =>
+        {
+            _w.Write((double)b.ExtentX); _w.Write((double)b.ExtentY); _w.Write((double)b.ExtentZ);
+        });
+        Double("SphereRadius", b.SphereRadius);
+        WriteNone();
         EndTag(so, vs);
     }
 
