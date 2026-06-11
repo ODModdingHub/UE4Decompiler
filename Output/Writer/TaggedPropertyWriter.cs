@@ -84,6 +84,16 @@ public sealed class TaggedPropertyWriter
         EndTag(so, vs);
     }
 
+    /// <summary>SoftObjectProperty (e.g. ULevelStreaming.WorldAsset). 4.21 FSoftObjectPath = FName AssetPathName +
+    /// FString SubPathString. assetPath is the full "/Game/Path/Map.Map" object path; SubPath is empty for a map.</summary>
+    public void SoftObject(string name, string assetPath)
+    {
+        var so = BeginTag(name, "SoftObjectProperty"); var vs = _w.Position;
+        FName(assetPath);          // AssetPathName
+        _w.WriteFString("");       // SubPathString
+        EndTag(so, vs);
+    }
+
     /// <summary>Enum/byte property — value is the enum entry's FName (e.g. "ENodeEnabledState::Disabled").</summary>
     public void Enum(string name, string enumTypeName, string entryName)
     {

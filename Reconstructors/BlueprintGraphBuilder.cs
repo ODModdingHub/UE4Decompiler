@@ -601,27 +601,21 @@ public static class BlueprintGraphBuilder
         string? cubePath = null, string? contentRoot = null)
     {
         var outFile = Path.Combine(string.IsNullOrWhiteSpace(outDir) ? "." : outDir, targetShort + ".uasset");
-        PlaceActorsCore(File.ReadAllBytes(cookedPath), Path.GetFileNameWithoutExtension(cookedPath),
-            File.ReadAllBytes(templatePath), outFile, targetShort, targetPackagePath, cubePath, contentRoot);
+        // Dev path: re-parse the local cooked file as a 4.21 Package (which IS an IPackage) and feed it in.
+        var ar = new FByteArchive(Path.GetFileNameWithoutExtension(cookedPath), File.ReadAllBytes(cookedPath), new VersionContainer(EGame.GAME_UE4_21));
+        var pkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
+        PlaceActorsCore(pkg, File.ReadAllBytes(templatePath), outFile, targetShort, targetPackagePath, cubePath, contentRoot);
     }
 
     /// <summary>Byte-based core: place a cooked map's reliably-loadable actors onto a template map, writing to <paramref name="outFile"/>.
     /// Filters out plugin/BP-class actors (e.g. /CustomMapTools/) so the result opens without missing-import crashes.</summary>
-    public static void PlaceActorsCore(byte[] cooked, string cookedName, byte[] templateData, string outFile,
+    public static void PlaceActorsCore(CUE4Parse.UE4.Assets.IPackage src, byte[] templateData, string outFile,
         string targetShort, string targetPackagePath, string? cubePath = null, string? contentRoot = null,
         Action<string, string, string>? onGameClass = null)
     {
-        Package cpkg;
-        try
-        {
-            var ar = new FByteArchive(cookedName, cooked, new VersionContainer(EGame.GAME_UE4_21));
-            cpkg = new Package(ar, (FArchive?)null, (FArchive?)null, (FArchive?)null, (CUE4Parse.FileProvider.IFileProvider?)null, false);
-        }
-        catch (Exception ex) { Log.Error(ex, "cooked parse"); return; }
-        // Load exports ONE AT A TIME (a single failing export — e.g. missing /CustomMapTools BP import —
-        // must not wipe transforms/mesh refs for all the others).
-        CUE4Parse.UE4.Assets.Exports.UObject? Safe(int i)
-        { try { return i >= 0 && i < cpkg.ExportsLazy.Length ? cpkg.ExportsLazy[i].Value : null; } catch { return null; } }
+        // Gather from the already-LOADED source package (uniform for legacy Package AND Zen IoPackage — Zen raw
+        // bytes can't be re-parsed standalone). Exports carry Outer/Class ResolvedObjects + parsed properties.
+        var srcExports = src.GetExports().ToList();
 
         // Gather placed actors (outer=PersistentLevel, actor-ish class) + their root component transform.
         var skip = new HashSet<string> { "Model", "Brush", "Polys", "Level", "World", "WorldSettings",
@@ -631,24 +625,24 @@ public static class BlueprintGraphBuilder
         // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
         // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
         var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName)>();
-        for (int i = 0; i < cpkg.ExportMap.Length; i++)
+        foreach (var e in srcExports)
         {
-            var e = cpkg.ExportMap[i];
-            if (e.OuterIndex?.Index is not int oi || oi <= 0) continue;
-            if (cpkg.ExportMap[oi - 1].ObjectName.Text != "PersistentLevel") continue;
-            var cls = e.ClassName;
+            // Top-level actor = export whose Outer is the PersistentLevel.
+            if (e.Outer?.Name.Text != "PersistentLevel") continue;
+            var cls = e.ExportType;
             if (skip.Contains(cls) || cls.EndsWith("Component")) continue;
-            var (actorPkg, actorCls) = CookedClassPath(cpkg, e);
-            if (actorPkg == null || !actorPkg.StartsWith("/Script/", StringComparison.Ordinal)) continue;  // native classes only
-            int compIdx = -1;
-            for (int j = 0; j < cpkg.ExportMap.Length; j++)
-                if (cpkg.ExportMap[j].OuterIndex?.Index == i + 1 && cpkg.ExportMap[j].ClassName.EndsWith("Component")) { compIdx = j; break; }
-            if (compIdx < 0) continue;
-            var (compPkg, compCls) = CookedClassPath(cpkg, cpkg.ExportMap[compIdx]);
-            if (compPkg == null || !compPkg.StartsWith("/Script/", StringComparison.Ordinal)) continue;
+            var actorPkg = ScriptPackageOf(e.Class);                     // "/Script/Engine" / "/Script/A2" / null
+            if (actorPkg == null) continue;                              // BP-class / unresolved -> skip
+            var actorCls = cls;
+            // Root component = a loaded export whose Outer is this actor (names are unique within the level).
+            var rootComp = srcExports.FirstOrDefault(c => c.Outer?.Name.Text == e.Name && c.ExportType.EndsWith("Component"));
+            if (rootComp == null) continue;
+            var compPkg = ScriptPackageOf(rootComp.Class);
+            if (compPkg == null) continue;
+            var compCls = rootComp.ExportType;
             // Still record the real base (helps stub generation for refs elsewhere)...
-            onGameClass?.Invoke(actorPkg!, actorCls!, "AActor");
-            onGameClass?.Invoke(compPkg!, compCls!, "USceneComponent");
+            onGameClass?.Invoke(actorPkg, actorCls, "AActor");
+            onGameClass?.Invoke(compPkg, compCls, "USceneComponent");
             // ...but for PLACEMENT, substitute a guaranteed-loaded engine class for any game-native actor/component.
             // Placing a /Script/Pavlov actor requires its stub module to be COMPILED; if the user hasn't rebuilt the
             // C++ project the class is unresolved and the editor crashes spawning it. A StaticMeshActor placeholder
@@ -657,30 +651,46 @@ public static class BlueprintGraphBuilder
             else if (compPkg != "/Script/Engine") { compPkg = "/Script/Engine"; compCls = "SceneComponent"; }
             try
             {
-                var rootComp = Safe(compIdx);
-                var label = e.ObjectName.Text;
-                var loc = rootComp != null ? ReadVec(rootComp, "RelativeLocation", 0) : new float[] { 0, 0, 0 };
-                var rot = rootComp != null ? ReadVec(rootComp, "RelativeRotation", 0) : new float[] { 0, 0, 0 };
-                var scl = rootComp != null ? ReadVec(rootComp, "RelativeScale3D", 1) : new float[] { 1, 1, 1 };
+                var label = e.Name;
+                var loc = ReadVec(rootComp, "RelativeLocation", 0);
+                var rot = ReadVec(rootComp, "RelativeRotation", 0);
+                var scl = ReadVec(rootComp, "RelativeScale3D", 1);
                 string? meshPkg = null, meshName = null;
-                if (rootComp != null && compCls == "StaticMeshComponent")
+                if (compCls == "StaticMeshComponent")
                 {
-                    // Resolve the StaticMesh objref via the cooked import table (no provider needed).
-                    var smi = rootComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("StaticMesh");
-                    if (smi != null && smi.Index < 0)
-                    {
-                        var imp = cpkg.ImportMap[-smi.Index - 1];
-                        meshName = imp.ObjectName.Text;
-                        var oidx = imp.OuterIndex?.Index ?? 0;
-                        if (oidx < 0) meshPkg = cpkg.ImportMap[-oidx - 1].ObjectName.Text;
-                    }
+                    // Resolve the StaticMesh objref via the loaded property's ResolvedObject (works for Zen + legacy).
+                    var mi = rootComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("StaticMesh")?.ResolvedObject;
+                    if (mi != null) { meshName = mi.Name.Text; meshPkg = PackagePathOfResolved(mi); }
                 }
-                var compName = cpkg.ExportMap[compIdx].ObjectName.Text;   // real subobject name (e.g. StaticMeshComponent0)
-                place.Add((actorPkg, actorCls, compPkg, compCls, compName, label, loc, rot, scl, meshPkg, meshName));
+                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName));
             }
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
         Log.Information("Cooked actors to place: {N} -> {L}", place.Count, string.Join(", ", place.Select(p => $"{p.label}({p.actorClass})")));
+
+        // Gather streaming sublevels from the source UWorld so the reskinned persistent map preserves its world
+        // composition. UWorld.StreamingLevels (native tail, after tagged-None) -> ULevelStreaming exports, each with a
+        // WorldAsset soft path to a sublevel .umap. We re-emit them as LevelStreamingAlwaysLoaded so the sublevels both
+        // register (Levels window) and load/show — volume-driven (Dynamic) wouldn't auto-load without the volume.
+        var streamingAssets = new List<string>();
+        var srcWorld = srcExports.OfType<CUE4Parse.UE4.Objects.Engine.UWorld>().FirstOrDefault();
+        if (srcWorld?.StreamingLevels != null)
+        {
+            foreach (var si in srcWorld.StreamingLevels)
+            {
+                try
+                {
+                    if (si == null || si.Index <= 0) continue;
+                    var sl = srcExports.ElementAtOrDefault(si.Index - 1);
+                    if (sl == null) continue;
+                    var wa = sl.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FSoftObjectPath>("WorldAsset").ToString();
+                    if (!string.IsNullOrEmpty(wa) && wa != "None") streamingAssets.Add(wa);
+                }
+                catch { /* skip a streaming entry that fails to resolve */ }
+            }
+            if (streamingAssets.Count > 0)
+                Log.Information("Streaming sublevels to preserve: {N} -> {L}", streamingAssets.Count, string.Join(", ", streamingAssets));
+        }
         // NOTE: do NOT bail on place.Count == 0 — we must still emit a valid (empty) reskinned template map.
         // Bailing leaves a stale/old .umap in place (e.g. a prior UncookedPackageWriter dump with an unresolvable
         // cooked import table), which crashes the editor/content-browser with a 0x8 null-deref on scan/open.
@@ -703,8 +713,14 @@ public static class BlueprintGraphBuilder
         NodePayloadWalker.MapPropertyIdx = TIdx("MapProperty");
         int noneIdx = TIdx("None");
 
-        var oldPath = tpkg.NameMap[0].Name ?? "";
-        var oldShort = oldPath.Contains('/') ? oldPath[(oldPath.LastIndexOf('/') + 1)..] : oldPath;
+        // The content-browser asset name of a map = the UWorld export's object name. Derive the template's short name
+        // from the World export (NOT NameMap[0], which isn't the map name) so we rename "Template_Default" -> target;
+        // otherwise every reskinned map shows as "Template_Default" in the content browser.
+        int worldExport = Array.FindIndex(tpkg.ExportMap, e => e.ClassName == "World");
+        var oldShort = worldExport >= 0 ? tpkg.ExportMap[worldExport].ObjectName.Text
+                       : ((tpkg.NameMap[0].Name ?? "").Contains('/') ? (tpkg.NameMap[0].Name ?? "")[((tpkg.NameMap[0].Name ?? "").LastIndexOf('/') + 1)..] : (tpkg.NameMap[0].Name ?? ""));
+        // The package-path name entry (e.g. "/Game/Maps/Template_Default") -> the target package path.
+        var oldPath = tpkg.NameMap.Select(n => n.Name).FirstOrDefault(s => s != null && s.Contains('/') && s.EndsWith("/" + oldShort, StringComparison.Ordinal)) ?? oldShort;
         var rename = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [oldPath] = targetPackagePath, [oldPath + "." + oldShort] = targetPackagePath + "." + targetShort,
@@ -728,6 +744,12 @@ public static class BlueprintGraphBuilder
         int baseExport = tpkg.ExportMap.Length;
         var newActorPkgs = new List<int>();
         for (int i = 0; i < place.Count; i++) newActorPkgs.Add(baseExport + i * 2 + 2);  // actor is 2nd of each pair
+        // Plan ULevelStreaming export indices (appended AFTER the actor pairs); outer = World, and the World's native
+        // StreamingLevels tail is rewritten to reference these so the persistent map preserves its sublevel composition.
+        int streamingBaseExport = baseExport + place.Count * 2;
+        var newStreamingPkgs = new List<int>();
+        for (int i = 0; i < streamingAssets.Count; i++) newStreamingPkgs.Add(streamingBaseExport + i + 1);
+        int worldPkgIdx = worldExport + 1;
 
         // Clone existing exports, patching ULevel.Actors to append the new actors.
         foreach (var imp in tpkg.ImportMap)
@@ -739,6 +761,7 @@ public static class BlueprintGraphBuilder
             var payload = new byte[(int)e.SerialSize];
             Array.Copy(data, (int)e.SerialOffset, payload, 0, payload.Length);
             if (i == lvlExport) payload = PatchLevelActors(payload, lvlPostNone, newActorPkgs);
+            else if (i == worldExport && newStreamingPkgs.Count > 0) payload = PatchWorldStreamingLevels(payload, noneIdx, newStreamingPkgs);
             spw.AddExportRaw(e.ObjectName.Index, e.ObjectName.Number, e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0,
                 e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0, payload, (uint)e.ObjectFlags, e.IsAsset);
         }
@@ -791,6 +814,19 @@ public static class BlueprintGraphBuilder
             }
         }
 
+        // Append ULevelStreaming exports (outer = World) for each preserved sublevel. Emitted as
+        // LevelStreamingAlwaysLoaded so the sublevel registers AND loads (the World tail now references these).
+        for (int i = 0; i < streamingAssets.Count; i++)
+        {
+            using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
+            var t = new TaggedPropertyWriter(w, spw.Name);
+            t.SoftObject("WorldAsset", streamingAssets[i]);
+            t.WriteNone(); w.Flush();
+            spw.AddExportRaw(spw.Name("LevelStreamingAlwaysLoaded_" + i), 0, ClassImp("/Script/Engine", "LevelStreamingAlwaysLoaded"),
+                0, 0, worldPkgIdx, ms.ToArray(), 0x8, false);
+        }
+        if (newStreamingPkgs.Count > 0) Log.Information("Preserved {N} streaming sublevel(s) in {T}", newStreamingPkgs.Count, targetShort);
+
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outFile))!);
         spw.Write(outFile);
         Log.Information("Placed {N} actors into {T} -> {Out}", place.Count, targetShort, outFile);
@@ -812,6 +848,25 @@ public static class BlueprintGraphBuilder
         var outer = imp.OuterIndex?.Index ?? 0;
         var pkgPath = outer < 0 ? pkg.ImportMap[-outer - 1].ObjectName.Text : null;
         return (pkgPath, cls);
+    }
+    /// <summary>The "/Script/&lt;Module&gt;" package of a resolved class, or null if it's not a native /Script class
+    /// (e.g. a BlueprintGeneratedClass under /Game). Works for both legacy and Zen by walking GetPathName.</summary>
+    private static string? ScriptPackageOf(CUE4Parse.UE4.Assets.ResolvedObject? cls)
+    {
+        var path = cls?.GetPathName();                       // e.g. "/Script/Engine.StaticMeshActor" or "/Game/BP/BP_X.BP_X_C"
+        if (string.IsNullOrEmpty(path) || !path.StartsWith("/Script/", StringComparison.Ordinal)) return null;
+        var dot = path.LastIndexOf('.');
+        return dot > 0 ? path.Substring(0, dot) : path;       // -> "/Script/Engine"
+    }
+    /// <summary>Package path of a resolved object (e.g. a referenced StaticMesh): "/Game/Meshes/SM_Foo" from
+    /// "/Game/Meshes/SM_Foo.SM_Foo".</summary>
+    private static string? PackagePathOfResolved(CUE4Parse.UE4.Assets.ResolvedObject obj)
+    {
+        var path = obj.GetPathName();
+        if (string.IsNullOrEmpty(path)) return null;
+        var dot = path.LastIndexOf('.');
+        var slash = path.LastIndexOf('/');
+        return dot > slash && dot > 0 ? path.Substring(0, dot) : path;
     }
     private static float[] ReadVec(CUE4Parse.UE4.Assets.Exports.UObject obj, string prop, float dflt)
     {
@@ -839,6 +894,31 @@ public static class BlueprintGraphBuilder
         BitConverter.GetBytes(count + newActors.Count).CopyTo(outp, countOff);
         Log.Information("Patched ULevel.Actors: {A} -> {B}", count, count + newActors.Count);
         return outp;
+    }
+
+    /// <summary>Rewrite UWorld's native StreamingLevels list so the persistent map references our synthesized
+    /// ULevelStreaming exports. UWorld native tail (after tagged-None, per CUE4Parse UWorld.Deserialize):
+    /// PersistentLevel (FPackageIndex) + ExtraReferencedObjects (TArray&lt;FPackageIndex&gt;) + StreamingLevels
+    /// (TArray&lt;FPackageIndex&gt;). We replace only the StreamingLevels array, preserving everything around it.</summary>
+    private static byte[] PatchWorldStreamingLevels(byte[] p, int noneIdx, IReadOnlyList<int> streamingPkgs)
+    {
+        int pos = NodePayloadWalker.SkipTaggedProperties(p, 0, noneIdx);   // right after the None tag
+        pos += 4;                                                          // leading field (same 4-byte lead PatchLevelActors uses)
+        pos += 4;                                                          // PersistentLevel FPackageIndex
+        if (pos + 4 > p.Length) { Log.Warning("World tail parse OOB at ExtraRef; skipping streaming patch"); return p; }
+        int extraCount = BitConverter.ToInt32(p, pos);
+        pos += 4 + extraCount * 4;   // ExtraReferencedObjects[]
+        if (extraCount < 0 || pos + 4 > p.Length) { Log.Warning("World tail parse OOB at StreamingLevels (extra={E}); skipping streaming patch", extraCount); return p; }
+        int slCountOff = pos;
+        int oldSl = BitConverter.ToInt32(p, pos); int afterSl = pos + 4 + oldSl * 4;  // old StreamingLevels[]
+        if (oldSl < 0 || afterSl > p.Length) { Log.Warning("World tail parse OOB (oldSl={S}); skipping streaming patch", oldSl); return p; }
+        using var ms = new MemoryStream();
+        ms.Write(p, 0, slCountOff);                                        // up to (not incl) StreamingLevels count
+        ms.Write(BitConverter.GetBytes(streamingPkgs.Count), 0, 4);
+        foreach (var pk in streamingPkgs) ms.Write(BitConverter.GetBytes(pk), 0, 4);
+        ms.Write(p, afterSl, p.Length - afterSl);                          // trailing native bytes after old array
+        Log.Information("Patched UWorld.StreamingLevels: {Old} -> {New}", oldSl, streamingPkgs.Count);
+        return ms.ToArray();
     }
 
     /// <summary>Clone a known-loadable editor StaticMesh (the engine Cube) renamed to a target mesh, copying

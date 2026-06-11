@@ -44,14 +44,26 @@ public sealed class ContentWriter
     /// scaffolded so the editor mounts "/&lt;Name&gt;/" and the plugin's cooked references resolve.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, byte> Plugins { get; } = new();
 
-    /// <summary>Write a content-only .uplugin for every discovered plugin so the editor auto-mounts its content root.
-    /// No "Modules" entry — these are content-only mounts; native /Script modules are handled separately via stubs.</summary>
+    /// <summary>For every discovered plugin mount: if it's an ENGINE plugin (e.g. IKRig, ControlRig), enable it in the
+    /// .uproject so the editor loads the REAL plugin (content + compiled module). Otherwise it's a game/content plugin
+    /// (e.g. CustomMapTools) — write a content-only .uplugin (no Modules) so the editor mounts "/&lt;Name&gt;/".
+    /// Shadowing an engine plugin with a module-less local copy is what made the editor fail with
+    /// "Plugin 'IKRig' failed to load because module 'IKRig' could not be loaded".</summary>
     public void ScaffoldPlugins()
     {
+        var enginePlugins = DiscoverEnginePluginNames();
+        var toEnable = new List<string>();
         foreach (var name in Plugins.Keys)
         {
             try
             {
+                if (enginePlugins.Contains(name))
+                {
+                    // Engine plugin: do NOT create a local shadow (it would lack the real module). Enable it instead.
+                    toEnable.Add(name);
+                    Log.Information("Plugin mount /{Name}/ is an engine plugin -> enabling in .uproject (no local shadow)", name);
+                    continue;
+                }
                 var dir = Path.Combine(_opts.OutputRoot, "Plugins", name);
                 Directory.CreateDirectory(Path.Combine(dir, "Content"));
                 var uplugin = Path.Combine(dir, name + ".uplugin");
@@ -71,6 +83,62 @@ public sealed class ContentWriter
             }
             catch (Exception ex) { Log.Warning(ex, "Failed to scaffold plugin {Name}", name); }
         }
+        if (toEnable.Count > 0) EnableEnginePluginsInUProject(toEnable);
+    }
+
+    /// <summary>Names of plugins the installed engine already provides (folder names of every Engine/Plugins/**.uplugin).
+    /// Shadowing one of these locally breaks module loading; instead we enable it in the .uproject. Falls back to a
+    /// curated set if the engine dir can't be located.</summary>
+    private HashSet<string> DiscoverEnginePluginNames()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Curated fallback (common content-bearing 5.x engine plugins) in case the engine dir isn't found.
+            "IKRig","ControlRig","RigLogic","Water","Landmass","Niagara","ChaosCloth","ChaosClothEditor",
+            "Text3D","GeometryScripting","MeshModelingToolset","Bridge","MetaHuman","AnimationData",
+            "GeometryCollectionPlugin","FullBodyIK","PoseSearch","MLDeformerFramework","DeformerGraph",
+        };
+        try
+        {
+            var assoc = _opts.EngineAssociation;   // e.g. "5.1"
+            var candidates = new[]
+            {
+                $@"C:\Program Files\Epic Games\UE_{assoc}\Engine\Plugins",
+                $@"D:\Program Files\Epic Games\UE_{assoc}\Engine\Plugins",
+                $@"C:\Epic Games\UE_{assoc}\Engine\Plugins",
+            };
+            foreach (var root in candidates)
+            {
+                if (!Directory.Exists(root)) continue;
+                foreach (var up in Directory.EnumerateFiles(root, "*.uplugin", SearchOption.AllDirectories))
+                    set.Add(Path.GetFileNameWithoutExtension(up));
+                break;
+            }
+        }
+        catch (Exception ex) { Log.Warning(ex, "Engine-plugin discovery failed; using curated set"); }
+        return set;
+    }
+
+    /// <summary>Merge {"Name":n,"Enabled":true} entries into the .uproject's Plugins array.</summary>
+    private void EnableEnginePluginsInUProject(List<string> names)
+    {
+        try
+        {
+            var uproject = Directory.EnumerateFiles(_opts.OutputRoot, "*.uproject").FirstOrDefault();
+            if (uproject is null) { Log.Warning("No .uproject found to enable engine plugins {N}", string.Join(",", names)); return; }
+            var root = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(uproject));
+            var arr = root["Plugins"] as Newtonsoft.Json.Linq.JArray ?? new Newtonsoft.Json.Linq.JArray();
+            var existing = new HashSet<string>(arr.Select(p => (string?)p["Name"] ?? "").Where(s => s.Length > 0), StringComparer.OrdinalIgnoreCase);
+            foreach (var n in names)
+            {
+                if (existing.Contains(n)) continue;
+                arr.Add(new Newtonsoft.Json.Linq.JObject { ["Name"] = n, ["Enabled"] = true });
+            }
+            root["Plugins"] = arr;
+            File.WriteAllText(uproject, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            Log.Information("Enabled {N} engine plugin(s) in {U}: {List}", names.Count, Path.GetFileName(uproject), string.Join(", ", names));
+        }
+        catch (Exception ex) { Log.Warning(ex, "Failed to enable engine plugins in .uproject"); }
     }
 
     // Engine + common engine-plugin script modules the editor already provides; never stub these.
@@ -186,7 +254,9 @@ public sealed class ContentWriter
             // (incl. plugin refs like /CustomMapTools/) which the editor can't resolve -> null-deref crash on load.
             // Route through the filtered PlaceActors path (requires --template + --cube); otherwise write an
             // empty-but-openable placeholder header.
-            if (!TryWritePlacedMap(asset, outputAsset, packageName, entry))
+            // The 4.21 placeholder header crashes a UE5 project's asset-registry scan (reads a -1 count). Only write
+            // it for UE4 targets; for UE5, skip (a missing map is a harmless absence, not an editor crash).
+            if (!TryWritePlacedMap(asset, outputAsset, packageName, entry) && _opts.Game < CUE4Parse.UE4.Versions.EGame.GAME_UE5_0)
                 _writer.WriteUAssetHeader(outputAsset, _opts.Game, packageName);
         }
         else if (asset.PrimaryType is "StaticMesh" && !string.IsNullOrWhiteSpace(_opts.CubePath))
@@ -234,15 +304,11 @@ public sealed class ContentWriter
     /// the asset has no loadable UTexture2D (caller falls back).</summary>
     private bool TryWriteRealTexture(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
     {
-        if (asset.Package is not Package pkg) return false;
         try
         {
-            CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D? tex = null;
-            for (var i = 0; i < pkg.ExportMap.Length && tex is null; i++)
-            {
-                if (!pkg.ExportMap[i].ClassName.Contains("Texture2D")) continue;
-                try { tex = pkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D; } catch { }
-            }
+            // Drive off the already-loaded exports (uniform for legacy Package AND Zen IoPackage) instead of the
+            // legacy-only pkg.ExportMap table — so UE5 textures are found too.
+            var tex = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D>().FirstOrDefault();
             if (tex is null) return false;
             if (!Writer.TextureWriter.WriteEditorTexture(tex, outputAsset, Path.GetFileNameWithoutExtension(outputAsset), packageName))
                 return false;
@@ -316,31 +382,54 @@ public sealed class ContentWriter
     /// so multi-material meshes get one StaticMaterials slot per section. A null/unresolved slot falls back to the
     /// engine DefaultMaterial so the slot count still matches the FRawMesh FaceMaterialIndices.</summary>
     internal static List<(string pkg, string name, string slot)> ResolveMeshMaterials(
-        CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh sm, Package pkg)
+        CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh sm, IPackage pkg)
     {
         var list = new List<(string, string, string)>();
         var slots = sm.StaticMaterials;
         if (slots is null) return list;
-        // Map material object name -> its /Game package path FROM THE IMPORT TABLE (these are the editor
-        // "/Game/..." paths; ResolvedObject.Outer.Name returns the cooked "Pavlov/Content/..." which won't resolve).
-        var byName = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var imp in pkg.ImportMap)
+        // Legacy 4.21 cooked paks: the import table's package-import ObjectName is the editor "/Game/..." path
+        // (ResolvedObject.Outer is the cooked "Pavlov/Content/..." mount, so we must use the import table).
+        Dictionary<string, string>? legacyByName = null;
+        if (pkg is Package lpkg)
         {
-            if (imp.ClassName.Text is not ("MaterialInstanceConstant" or "Material" or "MaterialInstanceDynamic")) continue;
-            var oi = imp.OuterIndex?.Index ?? 0;
-            if (oi >= 0) continue;
-            byName[imp.ObjectName.Text] = pkg.ImportMap[-oi - 1].ObjectName.Text;   // package path "/Game/.../MI_X"
+            legacyByName = new(StringComparer.Ordinal);
+            foreach (var imp in lpkg.ImportMap)
+            {
+                if (imp.ClassName.Text is not ("MaterialInstanceConstant" or "Material" or "MaterialInstanceDynamic")) continue;
+                var oi = imp.OuterIndex?.Index ?? 0;
+                if (oi >= 0) continue;
+                legacyByName[imp.ObjectName.Text] = lpkg.ImportMap[-oi - 1].ObjectName.Text;
+            }
         }
         foreach (var s in slots)
         {
             var name = s.MaterialInterface?.Name.Text;
             var slot = s.MaterialSlotName.Text;
-            if (!string.IsNullOrEmpty(name) && byName.TryGetValue(name!, out var p))
+            string? p = null;
+            if (!string.IsNullOrEmpty(name))
+            {
+                if (legacyByName != null) legacyByName.TryGetValue(name!, out p);
+                else p = PackagePathOf(s.MaterialInterface);   // Zen/UE5: use the resolved object's /Game path
+            }
+            if (p != null)
                 list.Add((p, name!, string.IsNullOrEmpty(slot) ? name! : slot));
             else
                 list.Add(("/Engine/EngineMaterials/DefaultMaterial", "DefaultMaterial", string.IsNullOrEmpty(slot) ? "Material" : slot));
         }
         return list;
+    }
+
+    /// <summary>Package path ("/Game/.../MI_X") of a resolved object via GetPathName (the full object path is
+    /// "/Game/.../MI_X.MI_X"; strip the object-name suffix after the last '.'). Returns null if unresolved.</summary>
+    private static string? PackagePathOf(CUE4Parse.UE4.Assets.ResolvedObject? obj)
+    {
+        if (obj is null) return null;
+        var full = obj.GetPathName();                       // e.g. /Game/Foo/MI_X.MI_X  (or just /Game/Foo/MI_X)
+        if (string.IsNullOrEmpty(full)) return null;
+        var lastSlash = full.LastIndexOf('/');
+        var lastDot = full.LastIndexOf('.');
+        var pkgPath = lastDot > lastSlash ? full[..lastDot] : full;
+        return pkgPath.StartsWith("/") ? pkgPath : null;
     }
 
     /// <summary>When --cube is configured, emit a real-geometry editor StaticMesh (engine-cube clone with the
@@ -349,25 +438,15 @@ public sealed class ContentWriter
     private bool TryWriteRealMesh(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
     {
         if (string.IsNullOrWhiteSpace(_opts.CubePath)) return false;
-        if (asset.Package is not Package pkg) return false;
         try
         {
-            CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh? sm = null;
-            for (var i = 0; i < pkg.ExportMap.Length && sm is null; i++)
-            {
-                if (pkg.ExportMap[i].ClassName != "StaticMesh") continue;
-                try { sm = pkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh; }
-                catch { /* not loadable */ }
-            }
+            // Uniform over legacy Package + Zen IoPackage: find the StaticMesh in the already-loaded exports.
+            var sm = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh>().FirstOrDefault();
             if (sm is null || !sm.TryConvert(out var cm) || cm.LODs.Count == 0) return false;
 
             // Resolve materials FIRST so the FRawMesh's per-face slot indices can be clamped to the actual slot count.
-            var mats = ResolveMeshMaterials(sm, pkg);
-            if (mats.Count == 0)
-            {
-                var (mp, mn) = ResolveFirstMaterial(pkg);
-                if (mp != null && mn != null) mats.Add((mp, mn, mn));
-            }
+            // Resolve via the mesh's StaticMaterials ResolvedObjects (works for both package types).
+            var mats = ResolveMeshMaterials(sm, asset.Package);
             var slotCount = mats.Count > 0 ? mats.Count : 1;   // cube fallback keeps 1 slot when no materials
             var blob = MeshWriter.BuildFRawMesh(cm.LODs[0], slotCount);
             BlueprintGraphBuilder.CloneMesh(_opts.CubePath!, outputAsset, sm.Name, packageName, blob,
@@ -493,7 +572,6 @@ public sealed class ContentWriter
     /// template/cube is configured, so the caller falls back to an empty placeholder header.</summary>
     private bool TryWritePlacedMap(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
     {
-        if (asset.Package is not Package) return false;
         if (string.IsNullOrWhiteSpace(_opts.MapTemplate) || string.IsNullOrWhiteSpace(_opts.CubePath))
         {
             Log.Warning("Map {Path}: --template + --cube not set; writing empty placeholder map (no actors)", asset.File.Path);
@@ -501,12 +579,6 @@ public sealed class ContentWriter
         }
         try
         {
-            var parts = _provider.SavePackage(asset.File.Path);
-            var head = parts.FirstOrDefault(p => p.Key.EndsWith(".uasset") || p.Key.EndsWith(".umap")).Value
-                       ?? parts.Values.First();
-            var uexp = parts.FirstOrDefault(p => p.Key.EndsWith(".uexp")).Value;
-            var combined = uexp is null ? head : Concat(head, uexp);
-
             var targetShort = Path.GetFileNameWithoutExtension(outputAsset);
             // Record the engine base each placed game class needs (actor->AActor, component->USceneComponent) so the
             // stub generator emits a spawnable class instead of a UObject the editor crashes trying to place.
@@ -517,7 +589,8 @@ public sealed class ContentWriter
                 if (EngineModules.Contains(module)) return;       // real engine class, no stub needed
                 StubBaseHints[$"{module}.{cls}"] = baseClass;
             }
-            BlueprintGraphBuilder.PlaceActorsCore(combined, Path.GetFileNameWithoutExtension(asset.File.Path),
+            // Drive placement off the already-LOADED package (uniform for legacy Package AND Zen IoPackage).
+            BlueprintGraphBuilder.PlaceActorsCore(asset.Package,
                 File.ReadAllBytes(_opts.MapTemplate!), outputAsset, targetShort, packageName,
                 _opts.CubePath, _opts.ContentRoot, OnGameClass);
 

@@ -44,6 +44,11 @@ public static class TextureWriter
             // 4.21's only 8-bit source format is TSF_BGRA8, and the editor reads our PNG bytes AS BGRA. So
             // pre-swap R<->B: PNG then stores (B,G,R,A), and UE reading it as BGRA yields the correct color.
             var px = bmp.Bytes;                         // RGBA bytes (copy)
+            if (LooksBlackOrEmpty(px))
+            {
+                Log.Warning("Texture {N}: decoded mip is all black/empty ({W}x{H}, format={Format}); source bulk may be missing or misread",
+                    targetShort, w, h, tex.Format);
+            }
             for (int i = 0; i + 2 < px.Length; i += 4) { (px[i], px[i + 2]) = (px[i + 2], px[i]); }
             var info = new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Unpremul);
             using var img = SKImage.FromPixelCopy(info, px);
@@ -103,6 +108,17 @@ public static class TextureWriter
         spw.AddExport(targetShort, tex2dClass, 0, 0, ms.ToArray(), objectFlags: 0x3, templatePkgIndex: 0, isAsset: true);
         spw.Write(outFile);
         Log.Information("Editor texture {N} -> {Out} ({W}x{H}, {B}B PNG)", targetShort, outFile, w, h, png.Length);
+        return true;
+    }
+
+    private static bool LooksBlackOrEmpty(byte[] rgba)
+    {
+        if (rgba.Length == 0) return true;
+        for (var i = 0; i + 3 < rgba.Length; i += 4)
+        {
+            if (rgba[i] != 0 || rgba[i + 1] != 0 || rgba[i + 2] != 0 || rgba[i + 3] != 0)
+                return false;
+        }
         return true;
     }
 }
