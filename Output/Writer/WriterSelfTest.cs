@@ -285,8 +285,22 @@ public static class WriterSelfTest
         try { exports = ((IPackage)pkg).GetExports().ToList(); }
         catch (Exception ex) { Log.Error(ex, "GetExports failed"); return; }
 
-        Log.Information("== {File}: {N} export(s) ==  fileLen={Len} bulkStart={Bulk}",
-            Path.GetFileName(path), exports.Count, data.Length, pkg.Summary.BulkDataStartOffset);
+        Log.Information("== {File}: {N} export(s) ==  fileLen={Len} header={Header} names={Names}@{NameOff} imports={Imports}@{ImpOff} exports={Exports}@{ExpOff} ar@{ArOff} bulkStart={Bulk} flags={Flags}",
+            Path.GetFileName(path), exports.Count, data.Length, pkg.Summary.TotalHeaderSize,
+            pkg.Summary.NameCount, pkg.Summary.NameOffset, pkg.Summary.ImportCount, pkg.Summary.ImportOffset,
+            pkg.Summary.ExportCount, pkg.Summary.ExportOffset, pkg.Summary.AssetRegistryDataOffset,
+            pkg.Summary.BulkDataStartOffset, pkg.Summary.PackageFlags);
+        if (Environment.GetEnvironmentVariable("DUMP_ASSETREG") == "1" && pkg.Summary.AssetRegistryDataOffset > 0)
+        {
+            var arStart = pkg.Summary.AssetRegistryDataOffset;
+            var arEnd = pkg.ExportMap.Length > 0 ? pkg.ExportMap.Min(e => (int)e.SerialOffset) : data.Length;
+            if (arEnd > arStart && arStart >= 0 && arEnd <= data.Length)
+            {
+                var len = Math.Min(arEnd - arStart, 512);
+                Log.Information("  asset-registry bytes {Start}..{End} ({Len} shown): {Hex}",
+                    arStart, arEnd, len, BitConverter.ToString(data, arStart, len));
+            }
+        }
         if (Environment.GetEnvironmentVariable("DUMP_VERSIONS") == "1")
         {
             var editorGuid = CUE4Parse.UE4.Versions.FEditorObjectVersion.GUID;

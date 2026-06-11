@@ -63,6 +63,13 @@ public sealed class TaggedPropertyWriter
         EndTag(so, vs);
     }
 
+    public void Int64(string name, long v)
+    {
+        var so = BeginTag(name, "Int64Property"); var vs = _w.Position;
+        _w.Write(v);
+        EndTag(so, vs);
+    }
+
     public void Float(string name, float v)
     {
         var so = BeginTag(name, "FloatProperty"); var vs = _w.Position;
@@ -174,6 +181,22 @@ public sealed class TaggedPropertyWriter
         var so = BeginTag(name, "ArrayProperty", () => FName("ObjectProperty")); var vs = _w.Position;
         _w.Write(packageIndices.Count);
         foreach (var pi in packageIndices) _w.Write(pi);
+        EndTag(so, vs);
+    }
+
+    public void Int64Array(string name, IReadOnlyList<long> values)
+    {
+        var so = BeginTag(name, "ArrayProperty", () => FName("Int64Property")); var vs = _w.Position;
+        _w.Write(values.Count);
+        foreach (var v in values) _w.Write(v);
+        EndTag(so, vs);
+    }
+
+    public void ByteArray(string name, IReadOnlyList<byte> values)
+    {
+        var so = BeginTag(name, "ArrayProperty", () => FName("ByteProperty")); var vs = _w.Position;
+        _w.Write(values.Count);
+        foreach (var v in values) _w.Write(v);
         EndTag(so, vs);
     }
 

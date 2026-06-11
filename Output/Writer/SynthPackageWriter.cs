@@ -42,10 +42,18 @@ public sealed class SynthPackageWriter
         i = _names.Count; _names.Add(s); _nameIdx[s] = i; return i;
     }
 
-    private sealed class Imp { public int ClassPkg, ClassPkgN, ClassName, ClassNameN, Outer, ObjName, ObjNameN; }
+    private sealed class Imp
+    {
+        public int ClassPkg, ClassPkgN, ClassName, ClassNameN, Outer, ObjName, ObjNameN;
+        public int PackageName, PackageNameN;
+        public bool ImportOptional;
+    }
     private sealed class Exp
     {
         public int ObjName, ObjNameN, ClassIdx, SuperIdx, TemplateIdx, OuterIdx; public uint Flags; public bool IsAsset;
+        public bool ForcedExport, NotForClient, NotForServer, NotAlwaysLoadedForEditorGame = true, GeneratePublicHash;
+        public uint PackageFlags;
+        public long ScriptSerializationStartOffset, ScriptSerializationEndOffset;
         public byte[] Payload = Array.Empty<byte>();
     }
 
@@ -66,6 +74,18 @@ public sealed class SynthPackageWriter
         return -_imports.Count;
     }
 
+    public int AddImportRaw(int classPkgIdx, int classPkgN, int classNameIdx, int classNameN, int outer, int objNameIdx, int objNameN,
+        int packageNameIdx, int packageNameN, bool importOptional)
+    {
+        _imports.Add(new Imp
+        {
+            ClassPkg = classPkgIdx, ClassPkgN = classPkgN, ClassName = classNameIdx, ClassNameN = classNameN,
+            Outer = outer, ObjName = objNameIdx, ObjNameN = objNameN,
+            PackageName = packageNameIdx, PackageNameN = packageNameN, ImportOptional = importOptional
+        });
+        return -_imports.Count;
+    }
+
     /// <summary>Add a synthesized import (number 0). Returns FPackageIndex (negative).</summary>
     public int AddImport(string classPkg, string className, int outerPkgIndex, string objName)
         => AddImportRaw(Name(classPkg), 0, Name(className), 0, outerPkgIndex, Name(objName), 0);
@@ -75,6 +95,22 @@ public sealed class SynthPackageWriter
         byte[] payload, uint objectFlags, bool isAsset)
     {
         _exports.Add(new Exp { ObjName = objNameIdx, ObjNameN = objNameN, ClassIdx = classIdx, SuperIdx = superIdx, TemplateIdx = templateIdx, OuterIdx = outerIdx, Flags = objectFlags, IsAsset = isAsset, Payload = payload });
+        return _exports.Count;
+    }
+
+    public int AddExportRaw(int objNameIdx, int objNameN, int classIdx, int superIdx, int templateIdx, int outerIdx,
+        byte[] payload, uint objectFlags, bool isAsset, bool forcedExport, bool notForClient, bool notForServer,
+        uint packageFlags, bool notAlwaysLoadedForEditorGame, bool generatePublicHash, long scriptSerializationStartOffset, long scriptSerializationEndOffset)
+    {
+        _exports.Add(new Exp
+        {
+            ObjName = objNameIdx, ObjNameN = objNameN, ClassIdx = classIdx, SuperIdx = superIdx, TemplateIdx = templateIdx,
+            OuterIdx = outerIdx, Flags = objectFlags, IsAsset = isAsset, Payload = payload,
+            ForcedExport = forcedExport, NotForClient = notForClient, NotForServer = notForServer,
+            PackageFlags = packageFlags, NotAlwaysLoadedForEditorGame = notAlwaysLoadedForEditorGame,
+            GeneratePublicHash = generatePublicHash,
+            ScriptSerializationStartOffset = scriptSerializationStartOffset, ScriptSerializationEndOffset = scriptSerializationEndOffset
+        });
         return _exports.Count;
     }
 
@@ -128,8 +164,19 @@ public sealed class SynthPackageWriter
     private byte[] SerializeImports()
     {
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
+        var ver = _game.GetVersion();
         foreach (var imp in _imports)
-        { w.Write(imp.ClassPkg); w.Write(imp.ClassPkgN); w.Write(imp.ClassName); w.Write(imp.ClassNameN); w.Write(imp.Outer); w.Write(imp.ObjName); w.Write(imp.ObjNameN); }
+        {
+            w.Write(imp.ClassPkg); w.Write(imp.ClassPkgN); w.Write(imp.ClassName); w.Write(imp.ClassNameN);
+            w.Write(imp.Outer); w.Write(imp.ObjName); w.Write(imp.ObjNameN);
+            if (ver >= EUnrealEngineObjectUE4Version.NON_OUTER_PACKAGE_IMPORT)
+            {
+                var pkgIdx = imp.PackageName != 0 || imp.PackageNameN != 0 ? imp.PackageName : imp.ObjName;
+                var pkgN = imp.PackageName != 0 || imp.PackageNameN != 0 ? imp.PackageNameN : imp.ObjNameN;
+                w.Write(pkgIdx); w.Write(pkgN);
+            }
+            if (ver >= EUnrealEngineObjectUE5Version.OPTIONAL_RESOURCES) w.WriteByteBool(imp.ImportOptional);
+        }
         w.Flush(); return ms.ToArray();
     }
 
@@ -149,13 +196,17 @@ public sealed class SynthPackageWriter
             { w.Write(e.Payload.Length); w.Write(serialOffsets?[i] ?? 0); }
             else
             { w.Write((long)e.Payload.Length); w.Write((long)(serialOffsets?[i] ?? 0)); }
-            w.WriteBool(false); w.WriteBool(false); w.WriteBool(false);   // Forced/NotForClient/NotForServer
-            w.WriteGuid(default);                                          // PackageGuid
-            w.Write(0u);                                                   // PackageFlags
-            if (ver >= EUnrealEngineObjectUE4Version.LOAD_FOR_EDITOR_GAME) w.WriteBool(true);  // NotAlwaysLoadedForEditorGame
+            w.WriteBool(e.ForcedExport); w.WriteBool(e.NotForClient); w.WriteBool(e.NotForServer);
+            if (ver < EUnrealEngineObjectUE5Version.REMOVE_OBJECT_EXPORT_PACKAGE_GUID) w.WriteGuid(default);
+            if (ver >= EUnrealEngineObjectUE5Version.TRACK_OBJECT_EXPORT_IS_INHERITED) w.WriteBool(false);
+            w.Write(e.PackageFlags);
+            if (ver >= EUnrealEngineObjectUE4Version.LOAD_FOR_EDITOR_GAME) w.WriteBool(e.NotAlwaysLoadedForEditorGame);
             if (ver >= EUnrealEngineObjectUE4Version.COOKED_ASSETS_IN_EDITOR_SUPPORT) w.WriteBool(e.IsAsset);
+            if (ver >= EUnrealEngineObjectUE5Version.OPTIONAL_RESOURCES) w.WriteBool(e.GeneratePublicHash);
             if (ver >= EUnrealEngineObjectUE4Version.PRELOAD_DEPENDENCIES_IN_COOKED_EXPORTS)
             { w.Write(-1); w.Write(0); w.Write(0); w.Write(0); w.Write(0); }
+            if (ver >= EUnrealEngineObjectUE5Version.SCRIPT_SERIALIZATION_OFFSET)
+            { w.Write(e.ScriptSerializationStartOffset); w.Write(e.ScriptSerializationEndOffset); }
         }
         w.Flush(); return ms.ToArray();
     }
@@ -164,6 +215,43 @@ public sealed class SynthPackageWriter
     {
         var assets = _exports.Where(e => e.IsAsset).ToList();
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
+        if (assets.Count == 1 && ClassNameOf(assets[0]) == "Material")
+        {
+            // UE5's Content Browser does not reliably index the old UE4 package-asset-registry tuple
+            // (ObjectName, ClassName, TagCount) for materials. Mirror the compact UE5.1 per-package record
+            // written by editor-saved Material assets: version-ish header, asset count, asset/class path, tags,
+            // chunk ids, package flags.
+            w.Write(0x00001E1B);
+            w.Write(0);
+            w.Write(1);
+            w.WriteFString(_names[assets[0].ObjName]);
+            w.WriteFString("/Script/Engine.Material");
+            var tags = new (string Key, string Value)[]
+            {
+                ("HasSceneColor", "False"),
+                ("HasPerInstanceRandom", "False"),
+                ("HasPerInstanceCustomData", "False"),
+                ("HasVertexInterpolator", "False"),
+                ("MaterialDomain", "MD_Surface"),
+                ("BlendMode", "BLEND_Opaque"),
+                ("StrataBlendMode", "SBM_Opaque"),
+                ("MaterialDecalResponse", "MDR_ColorNormalRoughness"),
+                ("ShadingModel", "MSM_DefaultLit"),
+                ("ShadingModels", "(ShadingModelField=2)"),
+                ("TranslucencyLightingMode", "TLM_VolumetricNonDirectional"),
+            };
+            w.Write(tags.Length);
+            foreach (var (key, value) in tags) { w.WriteFString(key); w.WriteFString(value); }
+            // Tail fields observed in UE5.1 editor-saved material package registry records. These bytes
+            // follow the fixed tag map before the final package flags; leaving them out makes the record
+            // shorter than UE5's Content Browser expects for material assets.
+            w.Write(10);
+            w.Write(0x2EF);
+            w.Write(1);
+            w.Write(0u); // PackageFlags
+            w.Flush();
+            return (ms.ToArray(), 1);
+        }
         w.Write(assets.Count);
         foreach (var e in assets) { w.WriteFString(_names[e.ObjName]); w.WriteFString(ClassNameOf(e)); w.Write(0); }
         w.Flush(); return (ms.ToArray(), assets.Count);
@@ -183,8 +271,16 @@ public sealed class SynthPackageWriter
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
         var ver = _game.GetVersion();
         w.Write(0x9E2A83C1u);
-        w.Write(-7); w.Write(864);
-        w.Write(ver.FileVersionUE4); w.Write(0);
+        var isUe5 = ver.FileVersionUE5 >= (int)EUnrealEngineObjectUE5Version.INITIAL_VERSION;
+        w.Write(isUe5 ? -8 : -7); w.Write(864);
+        w.Write(ver.FileVersionUE4);
+        if (isUe5) w.Write(ver.FileVersionUE5);
+        w.Write(0);
+        if (ver >= EUnrealEngineObjectUE5Version.PACKAGE_SAVED_HASH)
+        {
+            w.WriteBytes(new byte[20]);
+            w.Write(totalHeaderSize);
+        }
         if (CustomVersionsOverride != null)
         {
             w.Write(CustomVersionsOverride.Count);
@@ -196,23 +292,36 @@ public sealed class SynthPackageWriter
             w.Write(cvs.Count);
             foreach (var cv in cvs) { w.WriteGuid(cv.Key); w.Write(cv.Version); }
         }
-        w.Write(totalHeaderSize);
+        if (ver < EUnrealEngineObjectUE5Version.PACKAGE_SAVED_HASH) w.Write(totalHeaderSize);
         w.WriteFString("None");                                  // FolderName
         w.Write(PackageFlags);                                   // PackageFlags
         w.Write(_names.Count); w.Write(nameOffset);
+        if (ver >= EUnrealEngineObjectUE5Version.ADD_SOFTOBJECTPATH_LIST) { w.Write(0); w.Write(0); }
         if (ver >= EUnrealEngineObjectUE4Version.ADDED_PACKAGE_SUMMARY_LOCALIZATION_ID) w.WriteFString(string.Empty);
         if (ver >= EUnrealEngineObjectUE4Version.SERIALIZE_TEXT_IN_PACKAGES) { w.Write(0); w.Write(0); }
         w.Write(_exports.Count); w.Write(exportOffset);
         w.Write(_imports.Count); w.Write(importOffset);
+        if (ver >= EUnrealEngineObjectUE5Version.VERSE_CELLS) { w.Write(0); w.Write(0); w.Write(0); w.Write(0); }
+        if (ver >= EUnrealEngineObjectUE5Version.METADATA_SERIALIZATION_OFFSET) w.Write(0);
         w.Write(dependsOffset);
         if (ver >= EUnrealEngineObjectUE4Version.ADD_STRING_ASSET_REFERENCES_MAP) { w.Write(0); w.Write(0); }
         if (ver >= EUnrealEngineObjectUE4Version.ADDED_SEARCHABLE_NAMES) w.Write(0);
         w.Write(0);                                              // ThumbnailTableOffset
-        w.WriteGuid(MakeGuid());                                 // package Guid
+        if (ver >= EUnrealEngineObjectUE5Version.IMPORT_TYPE_HIERARCHIES) { w.Write(0); w.Write(0); }
+        if (ver < EUnrealEngineObjectUE5Version.PACKAGE_SAVED_HASH) w.WriteGuid(MakeGuid());
         w.Write(1);                                              // Generations count
         w.Write(_exports.Count); w.Write(_names.Count);
-        if (ver >= EUnrealEngineObjectUE4Version.ENGINE_VERSION_OBJECT) w.WriteEngineVersion(4, 21, 2, 0, "++UE4+Release-4.21"); else w.Write(0);
-        if (ver >= EUnrealEngineObjectUE4Version.PACKAGE_SUMMARY_HAS_COMPATIBLE_ENGINE_VERSION) w.WriteEngineVersion(4, 21, 2, 0, "++UE4+Release-4.21");
+        if (ver >= EUnrealEngineObjectUE4Version.ENGINE_VERSION_OBJECT)
+        {
+            if (isUe5) w.WriteEngineVersion(5, 1, 0, 0, "++UE5+Release-5.1");
+            else w.WriteEngineVersion(4, 21, 2, 0, "++UE4+Release-4.21");
+        }
+        else w.Write(0);
+        if (ver >= EUnrealEngineObjectUE4Version.PACKAGE_SUMMARY_HAS_COMPATIBLE_ENGINE_VERSION)
+        {
+            if (isUe5) w.WriteEngineVersion(5, 1, 0, 0, "++UE5+Release-5.1");
+            else w.WriteEngineVersion(4, 21, 2, 0, "++UE4+Release-4.21");
+        }
         w.Write(0u);                                             // CompressionFlags
         w.Write(0);                                              // CompressedChunks count
         w.Write(0u);                                             // PackageSource
@@ -223,6 +332,9 @@ public sealed class SynthPackageWriter
         if (ver >= EUnrealEngineObjectUE4Version.CHANGED_CHUNKID_TO_BE_AN_ARRAY_OF_CHUNKIDS) w.Write(0);
         else if (ver >= EUnrealEngineObjectUE4Version.ADDED_CHUNKID_TO_ASSETDATA_AND_UPACKAGE) w.Write(-1);
         if (ver >= EUnrealEngineObjectUE4Version.PRELOAD_DEPENDENCIES_IN_COOKED_EXPORTS) { w.Write(-1); w.Write(0); }
+        if (ver >= EUnrealEngineObjectUE5Version.NAMES_REFERENCED_FROM_EXPORT_DATA) w.Write(0);
+        if (ver >= EUnrealEngineObjectUE5Version.PAYLOAD_TOC) w.Write(0);
+        if (ver >= EUnrealEngineObjectUE5Version.DATA_RESOURCES) { w.Write(0); w.Write(0); }
         w.Flush(); return ms.ToArray();
     }
 
