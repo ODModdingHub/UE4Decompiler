@@ -15,10 +15,10 @@ public static class Program
 {
     public sealed class Options
     {
-        [Option("input", Required = true, HelpText = "Path to a .pak/.utoc or a directory of containers.")]
+        [Option("input", HelpText = "Path to a .pak/.utoc or a directory of containers.")]
         public string Input { get; set; } = "";
 
-        [Option("output", Required = true, HelpText = "Output project root directory.")]
+        [Option("output", HelpText = "Output project root directory.")]
         public string Output { get; set; } = "";
 
         [Option("version", HelpText = "UE version hint, e.g. 4.27 or 5.1 (auto-detected if omitted).")]
@@ -83,6 +83,9 @@ public static class Program
 
         [Option("dump-package", HelpText = "Dev: parse a local .uasset via CUE4Parse and dump every export's properties (for reversing editor graph format).")]
         public string? DumpPackage { get; set; }
+
+        [Option("compare-meshes", HelpText = "Dev: compare two local editor StaticMesh .uasset files. Format: bad.uasset|rebuilt.uasset")]
+        public string? CompareMeshes { get; set; }
 
         [Option("reemit", HelpText = "Dev: parse a local editor .uasset and re-emit it via UncookedPackageWriter to --output (round-trip test for editor-graph packages).")]
         public string? Reemit { get; set; }
@@ -185,6 +188,19 @@ public bool GenMeshAll { get; set; }
             return 0;
         }
 
+        if (!string.IsNullOrWhiteSpace(o.CompareMeshes))
+        {
+            var parts = o.CompareMeshes.Split('|', 2);
+            if (parts.Length != 2)
+            {
+                Log.Error("--compare-meshes expects bad.uasset|rebuilt.uasset");
+                return 1;
+            }
+            Output.Writer.WriterSelfTest.CompareStaticMeshes(parts[0], parts[1],
+                VersionDetector.FromHint(o.Version) ?? EGame.GAME_UE4_21);
+            return 0;
+        }
+
         if (!string.IsNullOrWhiteSpace(o.GenMat))
         {
             // --gen-mat <materialShortName>  --reskin-path <texture /Game pkg path>  --reskin-name <texture object name>
@@ -265,6 +281,12 @@ public bool GenMeshAll { get; set; }
 
         try
         {
+            if (string.IsNullOrWhiteSpace(o.Input) || string.IsNullOrWhiteSpace(o.Output))
+            {
+                Log.Error("--input and --output are required for extraction. Local dev commands such as --dump-package and --compare-meshes do not need them.");
+                return 1;
+            }
+
             // 1. Resolve AES key + initial engine version (hint, or a sensible default for mounting).
             var aesKey = AesKeyResolver.FromHex(o.AesKey);
             var hinted = VersionDetector.FromHint(o.Version);

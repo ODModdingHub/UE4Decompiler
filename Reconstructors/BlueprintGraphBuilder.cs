@@ -821,7 +821,7 @@ public static class BlueprintGraphBuilder
             using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
             var t = new TaggedPropertyWriter(w, spw.Name);
             t.SoftObject("WorldAsset", streamingAssets[i]);
-            t.WriteNone(); w.Flush();
+            t.WriteNone(); w.Write(0); w.Flush(); // UObject: bSerializeGuid = false
             spw.AddExportRaw(spw.Name("LevelStreamingAlwaysLoaded_" + i), 0, ClassImp("/Script/Engine", "LevelStreamingAlwaysLoaded"),
                 0, 0, worldPkgIdx, ms.ToArray(), 0x8, false);
         }

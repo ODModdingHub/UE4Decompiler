@@ -1,6 +1,7 @@
 using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Assets;
 using CUE4Parse.UE4.Assets.Exports;
+using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse.UE4.Versions;
 using Serilog;
 
@@ -311,6 +312,106 @@ public static class WriterSelfTest
             Log.Information("EXPORT[{I}] {Name} : {Type}  ({P} props)", i, e.Name, e.ExportType, e.Properties.Count);
             foreach (var p in e.Properties) DumpProp(p, "    ");
         }
+    }
+
+    public static void CompareStaticMeshes(string leftPath, string rightPath, EGame game = EGame.GAME_UE4_21)
+    {
+        var left = LoadStaticMeshForCompare(leftPath, game);
+        var right = LoadStaticMeshForCompare(rightPath, game);
+        if (left is null || right is null) return;
+
+        Log.Information("== StaticMesh compare ==");
+        Log.Information("LEFT  {Path}", Path.GetFullPath(leftPath));
+        Log.Information("RIGHT {Path}", Path.GetFullPath(rightPath));
+        Log.Information("Package: fileLen {L} -> {R}, bulkStart {LB} -> {RB}",
+            left.Data.Length, right.Data.Length, left.Package.Summary.BulkDataStartOffset, right.Package.Summary.BulkDataStartOffset);
+        Log.Information("Export: size {L} -> {R}, flags 0x{LF:X} -> 0x{RF:X}",
+            left.Export.SerialSize, right.Export.SerialSize, (uint)left.Export.ObjectFlags, (uint)right.Export.ObjectFlags);
+
+        DumpMeshSummary("LEFT ", left.Mesh);
+        DumpMeshSummary("RIGHT", right.Mesh);
+        DumpPropDiff(left.Mesh, right.Mesh, "bAutoComputeLODScreenSize");
+        DumpPropDiff(left.Mesh, right.Mesh, "PositiveBoundsExtension");
+        DumpPropDiff(left.Mesh, right.Mesh, "NegativeBoundsExtension");
+        DumpPropDiff(left.Mesh, right.Mesh, "SectionInfoMap");
+        DumpPropDiff(left.Mesh, right.Mesh, "OriginalSectionInfoMap");
+
+        var leftPayload = SliceExport(left.Data, left.Export);
+        var rightPayload = SliceExport(right.Data, right.Export);
+        Log.Information("Payload SHA256: {L} -> {R}", Sha256(leftPayload), Sha256(rightPayload));
+        Log.Information("Payload tail LEFT : {Tail}", HexTail(leftPayload, 96));
+        Log.Information("Payload tail RIGHT: {Tail}", HexTail(rightPayload, 96));
+    }
+
+    private sealed record MeshCompareInfo(byte[] Data, Package Package, CUE4Parse.UE4.Objects.UObject.FObjectExport Export, UStaticMesh Mesh);
+
+    private static MeshCompareInfo? LoadStaticMeshForCompare(string path, EGame game)
+    {
+        try
+        {
+            var data = File.ReadAllBytes(path);
+            var ar = new CUE4Parse.UE4.Readers.FByteArchive(Path.GetFileNameWithoutExtension(path), data, new VersionContainer(game));
+            var pkg = new Package(ar, (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null,
+                (CUE4Parse.UE4.Readers.FArchive?)null, (IFileProvider?)null, false);
+            for (var i = 0; i < pkg.ExportMap.Length; i++)
+            {
+                if (pkg.ExportMap[i].ClassName != "StaticMesh") continue;
+                if (pkg.ExportsLazy[i].Value is UStaticMesh sm)
+                    return new MeshCompareInfo(data, pkg, pkg.ExportMap[i], sm);
+            }
+            Log.Error("No StaticMesh export in {Path}", path);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load StaticMesh {Path}", path);
+        }
+        return null;
+    }
+
+    private static void DumpMeshSummary(string label, UStaticMesh sm)
+    {
+        var rd = sm.RenderData;
+        Log.Information("{Label}: cooked={Cooked}, props={Props}, staticMaterials={Mats}, LODs={Lods}",
+            label, sm.bCooked, sm.Properties.Count, sm.StaticMaterials?.Length ?? 0, rd?.LODs?.Length ?? 0);
+        if (rd?.Bounds is { } b)
+        {
+            Log.Information("{Label}: bounds origin=({OX},{OY},{OZ}) extent=({EX},{EY},{EZ}) sphere={R}",
+                label, b.Origin.X, b.Origin.Y, b.Origin.Z, b.BoxExtent.X, b.BoxExtent.Y, b.BoxExtent.Z, b.SphereRadius);
+        }
+        if (rd?.ScreenSize is { Length: > 0 } ss)
+            Log.Information("{Label}: screenSize=[{S}]", label, string.Join(", ", ss.Select(x => x.ToString("G6"))));
+        var lod0 = rd?.LODs?.FirstOrDefault();
+        if (lod0 != null)
+            Log.Information("{Label}: LOD0 sections={Sections}, sourceBounds={SourceBounds}",
+                label, lod0.Sections?.Length ?? 0,
+                lod0.SourceMeshBounds is null ? "<null>" :
+                    $"origin=({lod0.SourceMeshBounds.Origin.X},{lod0.SourceMeshBounds.Origin.Y},{lod0.SourceMeshBounds.Origin.Z}) extent=({lod0.SourceMeshBounds.BoxExtent.X},{lod0.SourceMeshBounds.BoxExtent.Y},{lod0.SourceMeshBounds.BoxExtent.Z}) sphere={lod0.SourceMeshBounds.SphereRadius}");
+    }
+
+    private static void DumpPropDiff(UStaticMesh left, UStaticMesh right, string prop)
+    {
+        var l = left.Properties.FirstOrDefault(p => p.Name.Text == prop)?.Tag?.ToString() ?? "<missing>";
+        var r = right.Properties.FirstOrDefault(p => p.Name.Text == prop)?.Tag?.ToString() ?? "<missing>";
+        if (l != r) Log.Information("PROP {Prop}: {L} -> {R}", prop, l, r);
+    }
+
+    private static byte[] SliceExport(byte[] data, CUE4Parse.UE4.Objects.UObject.FObjectExport export)
+    {
+        var payload = new byte[(int)export.SerialSize];
+        Array.Copy(data, (int)export.SerialOffset, payload, 0, payload.Length);
+        return payload;
+    }
+
+    private static string Sha256(byte[] data)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(data);
+        return Convert.ToHexString(hash);
+    }
+
+    private static string HexTail(byte[] data, int max)
+    {
+        var start = Math.Max(0, data.Length - max);
+        return BitConverter.ToString(data, start, data.Length - start);
     }
 
     /// <summary>Dump an already-loaded package (works for BOTH legacy Package and UE5 IoPackage/Zen — only the
