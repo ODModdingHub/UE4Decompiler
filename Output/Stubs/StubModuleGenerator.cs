@@ -22,6 +22,7 @@ public sealed class StubModuleGenerator
 {
     private readonly Dictionary<string, char> _sdkPrefix; // bareName -> 'A'/'U'/'F'/'E'
     private IReadOnlyDictionary<string, string> _baseHints = new Dictionary<string, string>(); // "Module.Name" -> engine base
+    private Dictionary<string, SortedSet<string>> _methodHints = new(StringComparer.Ordinal); // "Module.Name" -> methods
 
     public StubModuleGenerator(string? sdkDumpDir)
     {
@@ -29,9 +30,11 @@ public sealed class StubModuleGenerator
     }
 
     public void Generate(string outputRoot, IReadOnlyCollection<GameStub> stubs,
-        IReadOnlyDictionary<string, string>? baseHints = null)
+        IReadOnlyDictionary<string, string>? baseHints = null,
+        IReadOnlyCollection<string>? methodHints = null)
     {
         _baseHints = baseHints ?? new Dictionary<string, string>();
+        _methodHints = ParseMethodHints(methodHints);
         if (stubs.Count == 0) { Log.Information("--emit-stubs: no game-module types referenced; nothing to generate."); return; }
 
         var uproject = Directory.EnumerateFiles(outputRoot, "*.uproject").FirstOrDefault();
@@ -90,7 +93,9 @@ public sealed class StubModuleGenerator
             "GameFramework/GameStateBase.h","GameFramework/GameUserSettings.h","GameFramework/HUD.h",
             "GameFramework/SaveGame.h","GameFramework/Volume.h","Engine/GameInstance.h","Engine/LocalPlayer.h",
             "Engine/LevelScriptActor.h","Engine/DataAsset.h","Animation/AnimInstance.h","Components/ActorComponent.h",
-            "Components/SceneComponent.h","Camera/PlayerCameraManager.h","AIController.h","Blueprint/UserWidget.h",
+            "Components/SceneComponent.h","Components/StaticMeshComponent.h","Components/LightComponent.h",
+            "Components/PointLightComponent.h","Components/SpotLightComponent.h","Components/DirectionalLightComponent.h",
+            "Camera/PlayerCameraManager.h","AIController.h","Blueprint/UserWidget.h",
         }) h.AppendLine($"#include \"{inc}\"");
         h.AppendLine($"#include \"{module}.generated.h\"").AppendLine();
 
@@ -111,8 +116,24 @@ public sealed class StubModuleGenerator
                         (cpp, baseClass) = (hintBase[0] + t.Name, hintBase);   // base inferred from actual usage
                     else
                         (cpp, baseClass) = ResolveClass(t.Name);               // fall back to name-suffix heuristic
-                    h.AppendLine($"UCLASS(Blueprintable)").AppendLine($"class {cpp} : public {baseClass} {{ GENERATED_BODY() }};").AppendLine();
-                    report.AppendLine($"  [{module}] class {cpp} : {baseClass}");
+                    var key = $"{module}.{t.Name}";
+                    h.AppendLine("UCLASS(Blueprintable)");
+                    h.AppendLine($"class {cpp} : public {baseClass}");
+                    h.AppendLine("{");
+                    h.AppendLine("    GENERATED_BODY()");
+                    if (_methodHints.TryGetValue(key, out var methods) && methods.Count > 0)
+                    {
+                        h.AppendLine("public:");
+                        foreach (var method in methods)
+                        {
+                            h.AppendLine("    UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category=\"Recovered\")");
+                            h.AppendLine($"    void {method}();");
+                        }
+                    }
+                    h.AppendLine("};").AppendLine();
+                    report.AppendLine($"  [{module}] class {cpp} : {baseClass}" +
+                                      (_methodHints.TryGetValue(key, out var reportMethods) && reportMethods.Count > 0
+                                          ? $" ({reportMethods.Count} method stub(s))" : ""));
                     classCount++; break;
             }
         }
@@ -144,6 +165,13 @@ public sealed class StubModuleGenerator
                 public {{projectName}}Target(TargetInfo Target) : base(Target)
                 {
                     Type = TargetType.Game;
+                    DefaultBuildSettings = BuildSettingsVersion.Latest;
+                    IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+                    CppStandard = CppStandardVersion.Cpp20;
+                    // Stub project: the engine source may emit warnings under a newer toolchain (e.g. VS 2026 hits
+                    // C4668 __has_feature in engine headers). Don't fail the build on those — we only need the stub
+                    // classes to link so the editor opens.
+                    bWarningsAsErrors = false;
                     ExtraModuleNames.AddRange(new string[] { {{list}} });
                 }
             }
@@ -159,6 +187,10 @@ public sealed class StubModuleGenerator
                 public {{projectName}}EditorTarget(TargetInfo Target) : base(Target)
                 {
                     Type = TargetType.Editor;
+                    DefaultBuildSettings = BuildSettingsVersion.Latest;
+                    IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+                    CppStandard = CppStandardVersion.Cpp20;
+                    bWarningsAsErrors = false;   // tolerate engine-header warnings under newer toolchains (VS 2026 C4668)
                     ExtraModuleNames.AddRange(new string[] { {{list}} });
                 }
             }
@@ -208,6 +240,38 @@ public sealed class StubModuleGenerator
         if (_sdkPrefix.TryGetValue(name, out var p))
             return p == 'A' ? ("A" + name, "AActor") : ("U" + name, "UObject");
         return ("U" + name, "UObject");
+    }
+
+    private static Dictionary<string, SortedSet<string>> ParseMethodHints(IReadOnlyCollection<string>? hints)
+    {
+        var map = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        if (hints is null) return map;
+        foreach (var hint in hints)
+        {
+            var colon = hint.LastIndexOf(':');
+            if (colon <= 0 || colon + 1 >= hint.Length) continue;
+            var key = hint[..colon];
+            var method = hint[(colon + 1)..];
+            if (IsDelegateSignatureFunction(method)) continue;
+            if (!IsCppIdentifier(method)) continue;
+            if (!map.TryGetValue(key, out var methods))
+                map[key] = methods = new SortedSet<string>(StringComparer.Ordinal);
+            methods.Add(method);
+        }
+        return map;
+    }
+
+    private static bool IsDelegateSignatureFunction(string name) =>
+        name.EndsWith("__DelegateSignature", StringComparison.Ordinal)
+        || name.EndsWith("_DelegateSignature", StringComparison.Ordinal);
+
+    private static bool IsCppIdentifier(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (!(value[0] == '_' || char.IsLetter(value[0]))) return false;
+        for (var i = 1; i < value.Length; i++)
+            if (!(value[i] == '_' || char.IsLetterOrDigit(value[i]))) return false;
+        return true;
     }
 
     private static string StructCpp(string name) =>

@@ -15,35 +15,35 @@ public static class TextureWriter
 {
     public static int MaxDim = 1024;
 
-    public static bool WriteEditorTexture(UTexture2D tex, string outFile, string targetShort, string targetPackagePath)
+    public static bool WriteEditorTexture(CUE4Parse.UE4.Assets.Exports.Texture.UTexture tex, string outFile, string targetShort, string targetPackagePath)
     {
-        byte[] png; int w, h;
+        bool isCube = tex is CUE4Parse.UE4.Assets.Exports.Texture.UTextureCube;
+        byte[] png; int w = 0, h = 0, numSlices;
         try
         {
-            var decoded = tex.Decode(MaxDim, ETexturePlatform.DesktopMobile) ?? tex.Decode(ETexturePlatform.DesktopMobile);
+            // One decode gives the whole image. For a cube, CUE4Parse returns the 6 faces as a vertical strip
+            // (W x 6W); reinterpret that as NumSlices=6 of WxW (the strip bytes are already 6 consecutive WxW faces).
+            int mipIdx = tex.GetMipIndexByMaxSize(MaxDim);
+            // Detex (native) is initialized at startup, so the default decoder handles BC1/3/7 AND BC6H HDR correctly.
+            var decoded = tex.DecodeMip(mipIdx, ETexturePlatform.DesktopMobile, 0) ?? tex.Decode(ETexturePlatform.DesktopMobile);
             if (decoded is null) { Log.Warning("Texture {N}: no decodable mip", targetShort); return false; }
-            using var raw = decoded.ToSkBitmap();
-            w = raw.Width; h = raw.Height;
-            using var bmp = (raw.ColorType == SKColorType.Rgba8888 && raw.AlphaType == SKAlphaType.Unpremul)
-                ? raw : raw.Copy(SKColorType.Rgba8888);
-
-            var px = bmp.Bytes;
-            if (LooksBlackOrEmpty(px))
+            using (var raw = decoded.ToSkBitmap())
             {
-                Log.Warning("Texture {N}: decoded mip is all black/empty ({W}x{H}, format={Format}); source bulk may be missing or misread",
-                    targetShort, w, h, tex.Format);
+                int dw = raw.Width, dh = raw.Height;
+                using var bmp = (raw.ColorType == SKColorType.Bgra8888 && raw.AlphaType == SKAlphaType.Unpremul)
+                    ? raw : raw.Copy(SKColorType.Bgra8888);
+                png = bmp.Bytes;          // BGRA8888 == TSF_BGRA8 byte order; uncompressed (no decompress needed in UE5)
+                w = dw; h = dh; numSlices = 1;
+                if (isCube && dw > 0 && dh == dw * 6) { numSlices = 6; h = dw; }   // vertical 6-face strip -> 6 slices WxW
+                if (LooksBlackOrEmpty(png)) Log.Warning("Texture {N}: decoded all black/empty ({W}x{H})", targetShort, dw, dh);
             }
-
-            using var img = SKImage.FromBitmap(bmp);
-            using var d = img.Encode(SKEncodedImageFormat.Png, 100);
-            png = d.ToArray();
         }
         catch (Exception ex) { Log.Warning(ex, "Texture {N}: decode failed", targetShort); return false; }
         if (png.Length == 0 || w <= 0 || h <= 0) return false;
 
         var spw = new SynthPackageWriter(EGame.GAME_UE4_21, targetPackagePath);
         int enginePkg = spw.AddImport("/Script/CoreUObject", "Package", 0, "/Script/Engine");
-        int tex2dClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "Texture2D");
+        int tex2dClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, isCube ? "TextureCube" : "Texture2D");
 
         using var ms = new MemoryStream();
         using var aw = new FArchiveWriter(ms);
@@ -55,9 +55,11 @@ public static class TextureWriter
             inner.GuidStruct("Id", FGuid16.NewGuid());
             inner.Int("SizeX", w);
             inner.Int("SizeY", h);
-            inner.Int("NumSlices", 1);
+            inner.Int("NumSlices", numSlices);
             inner.Int("NumMips", 1);
-            inner.Bool("bPNGCompressed", true);
+            inner.Bool("bPNGCompressed", false);                                                  // raw, not PNG (4.21 reads this)
+            inner.ByteEnum("CompressionFormat", "ETextureSourceCompressionFormat", "TSCF_None");   // UE5: source bulk is uncompressed
+            inner.Bool("bGuidIsHash", false);                                                     // UE5: Id is a plain guid, not a content hash
             inner.ByteEnum("Format", "ETextureSourceFormat", "TSF_BGRA8");
             inner.WriteNone();
         });

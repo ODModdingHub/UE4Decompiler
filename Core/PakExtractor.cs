@@ -40,6 +40,17 @@ public sealed class PakExtractor : IDisposable
         }
         catch (Exception ex) { Log.Warning("Oodle init failed ({M}); Oodle-compressed entries won't read", ex.Message); }
 
+        // Detex native decoder (embedded Detex.dll) — required to correctly decode BC6H/BC7 HDR textures (e.g. HDR
+        // cubemaps). Without it those throw and fall back to a wrong-color managed decoder. Same approach as FModel.
+        try
+        {
+            var detexPath = CUE4Parse_Conversion.Textures.BC.DetexHelper.DLL_NAME;
+            CUE4Parse_Conversion.Textures.BC.DetexHelper.LoadDll(detexPath);     // extracts embedded dll if missing
+            CUE4Parse_Conversion.Textures.BC.DetexHelper.Initialize(detexPath);  // creates the decoder instance
+            Log.Information("Detex initialized ({Path})", detexPath);
+        }
+        catch (Exception ex) { Log.Warning("Detex init failed ({M}); BC6H/BC7 HDR textures may decode wrong", ex.Message); }
+
         Log.Information("Mounting containers from {Dir} (engine {Game})", directory, game);
         Provider = new DefaultFileProvider(directory, SearchOption.TopDirectoryOnly, isCaseInsensitive: true,
             new VersionContainer(game));

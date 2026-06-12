@@ -105,6 +105,17 @@ public sealed class TaggedPropertyWriter
         EndTag(so, vs);
     }
 
+    public void Text(string name, string ns, string key, string source)
+    {
+        var so = BeginTag(name, "TextProperty"); var vs = _w.Position;
+        _w.Write(0u);              // ETextFlag::None
+        _w.Write((byte)0);         // ETextHistoryType::Base
+        _w.WriteFString(ns);
+        _w.WriteFString(key);
+        _w.WriteFString(source);
+        EndTag(so, vs);
+    }
+
     /// <summary>SoftObjectProperty (e.g. ULevelStreaming.WorldAsset). 4.21 FSoftObjectPath = FName AssetPathName +
     /// FString SubPathString. assetPath is the full "/Game/Path/Map.Map" object path; SubPath is empty for a map.</summary>
     public void SoftObject(string name, string assetPath)

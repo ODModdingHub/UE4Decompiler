@@ -20,6 +20,12 @@ public sealed class SynthPackageWriter
     private readonly EGame _game;
     private readonly string _packageName;        // e.g. "/Game/Synth/SynthTest"
     public uint PackageFlags = 0;                // preserve original (e.g. PKG_RequiresLocalizationGather)
+    public bool SuppressAssetRegistry;
+    /// <summary>When set, write a single UE5.1 package-asset-registry record for this primary asset (name, full
+    /// class path e.g. "/Script/Engine.World") so the editor's asset-registry scan indexes the package and it
+    /// SHOWS in the content browser from disk (without this — e.g. AssetRegistryDataOffset=0 — maps only appear
+    /// once explicitly loaded). Same record shape the material special-case uses (proven to index in UE5.1).</summary>
+    public (string name, string classPath)? PrimaryArAsset;
     /// <summary>If set, write these EXACT custom versions (GUID+version) instead of the hardcoded 4.21 set.
     /// CRITICAL when reusing real editor payloads: the engine deserializes them against the summary's
     /// custom versions, so a mismatch corrupts reads (Assertion SerializeNum>=0).</summary>
@@ -133,8 +139,8 @@ public sealed class SynthPackageWriter
         var importOffset = nameOffset + namesBuf.Length;
         var exportOffset = importOffset + importsBuf.Length;
         var dependsOffset = exportOffset + exportsSize;
-        var arOffset = dependsOffset + dependsBuf.Length;
-        var headerSize = arOffset + arBuf.Length;
+        var arOffset = SuppressAssetRegistry ? 0 : dependsOffset + dependsBuf.Length;
+        var headerSize = dependsOffset + dependsBuf.Length + arBuf.Length;
 
         var offsets = new int[_exports.Count];
         var cursor = headerSize; var totalPayload = 0;
@@ -213,6 +219,22 @@ public sealed class SynthPackageWriter
 
     private (byte[] buf, int count) SerializeAssetRegistry()
     {
+        // Primary-asset record (e.g. a map's World): one UE5.1 package-AR entry so the content browser indexes the
+        // package from disk. Mirrors the material special-case record (leading DependencyDataOffset int64, asset
+        // count, FString name + full class path, tag count, observed UE5.1 tail) which is verified to index.
+        if (PrimaryArAsset is { } pa)
+        {
+            using var pms = new MemoryStream(); using var pw = new FArchiveWriter(pms);
+            pw.Write(0x00001E1B); pw.Write(0);     // DependencyDataOffset (int64) — value not validated for indexing
+            pw.Write(1);                           // asset count
+            pw.WriteFString(pa.name);
+            pw.WriteFString(pa.classPath);
+            pw.Write(0);                           // tag count (none needed for visibility)
+            pw.Write(10); pw.Write(0x2EF); pw.Write(1); pw.Write(0u);   // tail observed in UE5.1 records
+            pw.Flush();
+            return (pms.ToArray(), 1);
+        }
+        if (SuppressAssetRegistry) return (Array.Empty<byte>(), 0);
         var assets = _exports.Where(e => e.IsAsset).ToList();
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
         if (assets.Count == 1 && ClassNameOf(assets[0]) == "Material")

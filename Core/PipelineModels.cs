@@ -71,6 +71,15 @@ public sealed class DecompileOptions
     public string? MapTemplate { get; init; }
     /// <summary>Engine Cube StaticMesh path; cloned as a loadable placeholder for each mesh referenced by a placed map.</summary>
     public string? CubePath { get; init; }
+    /// <summary>Empty editor Blueprint (.uasset) used as the reskin base so cooked BPs (incl. UE5/Zen) show + open in
+    /// the content browser. Cloned + renamed per BP (the byte-based reconstructor can't handle Zen).</summary>
+    public string? BpTemplate { get; init; }
+
+    /// <summary>Experimental: append recovered K2 CallFunction nodes from cooked bytecode into cloned Blueprint templates.</summary>
+    public bool BpRecoverCalls { get; init; }
+
+    /// <summary>Experimental: emit recovered name-only native methods on generated game stubs for K2 member binding.</summary>
+    public bool EmitStubMethods { get; init; }
 
     public string ContentRoot => Path.Combine(OutputRoot, "Content");
 }

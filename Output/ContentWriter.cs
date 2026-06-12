@@ -40,9 +40,19 @@ public sealed class ContentWriter
     /// without crashing the editor.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, string> StubBaseHints { get; } = new();
 
+    /// <summary>Recovered game-native methods referenced by BP bytecode, keyed "Module.Class:Function".
+    /// These are only emitted when --emit-stub-methods is enabled; name-only functions are experimental.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, byte> StubMethodHints { get; } = new();
+
     /// <summary>Plugin mount names discovered in the pak (e.g. "CustomMapTools"); each gets a content-only .uplugin
     /// scaffolded so the editor mounts "/&lt;Name&gt;/" and the plugin's cooked references resolve.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, byte> Plugins { get; } = new();
+
+    /// <summary>Output /Game package paths already written (case-insensitive). UE registers packages by a
+    /// case-insensitive PackageId, so two sources that resolve to the same package name (case-variant folders,
+    /// name-munged collisions) crash with "FPackageId collision". We write each package name once.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _writtenPackages =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>For every discovered plugin mount: if it's an ENGINE plugin (e.g. IKRig, ControlRig), enable it in the
     /// .uproject so the editor loads the REAL plugin (content + compiled module). Otherwise it's a game/content plugin
@@ -52,16 +62,17 @@ public sealed class ContentWriter
     public void ScaffoldPlugins()
     {
         var enginePlugins = DiscoverEnginePluginNames();
-        var toEnable = new List<string>();
         foreach (var name in Plugins.Keys)
         {
             try
             {
                 if (enginePlugins.Contains(name))
                 {
-                    // Engine plugin: do NOT create a local shadow (it would lack the real module). Enable it instead.
-                    toEnable.Add(name);
-                    Log.Information("Plugin mount /{Name}/ is an engine plugin -> enabling in .uproject (no local shadow)", name);
+                    // Engine plugin (IKRig/ControlRig/etc.): do NOT create a local shadow (it lacks the real module ->
+                    // editor crash) AND do NOT enable it in the .uproject — enabling a CODE plugin makes UBT try to
+                    // build its module during compile, which fails ("ControlRig does not contain the module"). These
+                    // plugins are default-enabled in 5.x anyway, so we just leave them: content mounts, build is clean.
+                    Log.Information("Plugin mount /{Name}/ is an engine plugin -> left to the engine (no shadow, no .uproject enable)", name);
                     continue;
                 }
                 var dir = Path.Combine(_opts.OutputRoot, "Plugins", name);
@@ -83,7 +94,6 @@ public sealed class ContentWriter
             }
             catch (Exception ex) { Log.Warning(ex, "Failed to scaffold plugin {Name}", name); }
         }
-        if (toEnable.Count > 0) EnableEnginePluginsInUProject(toEnable);
     }
 
     /// <summary>Names of plugins the installed engine already provides (folder names of every Engine/Plugins/**.uplugin).
@@ -159,20 +169,178 @@ public sealed class ContentWriter
         "FacialAnimation","FacialAnimationEditor","GeometryCache","GeometryCollectionEngine","ChaosCloth",
     };
 
-    private void CollectGameTypes(Package pkg)
+    // Gather game-native /Script class refs for --emit-stubs. Uniform (Zen + legacy): walk the loaded exports'
+    // resolved Class (catches native /Script/<game> actors placed in maps) + BP ParentClass. The legacy import-table
+    // scan only worked for Package; Zen (IoStore) has a different import format, so nothing was stubbed -> "no source".
+    private void CollectGameTypes(ParsedAsset asset)
     {
-        var imports = pkg.ImportMap;
-        foreach (var imp in imports)
+        foreach (var e in asset.Exports)
         {
-            var kind = imp.ClassName.Text;
-            if (kind is not ("Class" or "ScriptStruct" or "Enum")) continue;     // only type definitions
-            var pkgName = OutermostPackageName(imports, imp);
-            if (pkgName is null || !pkgName.StartsWith("/Script/", StringComparison.Ordinal)) continue;
-            var module = pkgName["/Script/".Length..];
-            if (EngineModules.Contains(module)) continue;                        // editor already has it
-            var name = imp.ObjectName.Text;
-            GameStubs.TryAdd($"{module}.{name}", new GameStub(module, name, kind));
+            AddGameStub(e.Class, InferEngineBase(e.Class));
+            var parentClass = e.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("ParentClass")?.ResolvedObject;
+            AddGameStub(parentClass, InferEngineBase(parentClass));  // editor UBlueprint parent
+            if (e is CUE4Parse.UE4.Objects.UObject.UStruct s)
+            {
+                var super = s.SuperStruct.ResolvedObject;
+                AddGameStub(super, InferEngineBase(super));          // cooked BGC/native parent
+            }
         }
+    }
+
+    private void AddGameStub(CUE4Parse.UE4.Assets.ResolvedObject? ro, string? baseHint = null)
+    {
+        var path = ro?.GetPathName();
+        if (string.IsNullOrEmpty(path) || !path.StartsWith("/Script/", StringComparison.Ordinal)) return;
+        var dot = path.IndexOf('.');                                  // "/Script/<Module>.<Name>"
+        if (dot < 0) return;
+        var module = path.Substring("/Script/".Length, dot - "/Script/".Length);
+        // Skip engine AND engine-plugin modules (ControlRig, EnhancedInput, InterchangePipelines, WebBrowserWidget...)
+        // — stubbing those as project modules collides with the real engine modules and breaks the build.
+        if (EngineModuleNames().Contains(module)) return;
+        var name = path[(dot + 1)..];
+        if (!IsCppIdentifier(name) || !IsCppIdentifier(module)) return;
+        var key = $"{module}.{name}";
+        GameStubs.TryAdd(key, new GameStub(module, name, "Class"));
+        if (!string.IsNullOrWhiteSpace(baseHint)) SetStubBaseHint(key, baseHint);
+    }
+
+    private static bool IsCppIdentifier(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (!(value[0] == '_' || char.IsLetter(value[0]))) return false;
+        for (var i = 1; i < value.Length; i++)
+            if (!(value[i] == '_' || char.IsLetterOrDigit(value[i]))) return false;
+        return true;
+    }
+
+    private void AddGameStubMethod(string scriptPkg, string cls, string func)
+    {
+        if (!scriptPkg.StartsWith("/Script/", StringComparison.Ordinal)) return;
+        var module = scriptPkg["/Script/".Length..];
+        if (EngineModuleNames().Contains(module)) return;
+        if (IsDelegateSignatureFunction(func)) return;
+        if (!IsCppIdentifier(module) || !IsCppIdentifier(cls) || !IsCppIdentifier(func)) return;
+
+        var classKey = $"{module}.{cls}";
+        GameStubs.TryAdd(classKey, new GameStub(module, cls, "Class"));
+        StubMethodHints.TryAdd($"{classKey}:{func}", 0);
+    }
+
+    private void CollectGameStubMethods(IEnumerable<(string scriptPkg, string cls, string func)> calls)
+    {
+        foreach (var (scriptPkg, cls, func) in calls)
+            AddGameStubMethod(scriptPkg, cls, func);
+    }
+
+    private static bool IsDelegateSignatureFunction(string name) =>
+        name.EndsWith("__DelegateSignature", StringComparison.Ordinal)
+        || name.EndsWith("_DelegateSignature", StringComparison.Ordinal);
+
+    private void SetStubBaseHint(string key, string baseClass)
+    {
+        StubBaseHints.AddOrUpdate(key, baseClass, (_, old) => BaseHintRank(baseClass) > BaseHintRank(old) ? baseClass : old);
+    }
+
+    private static int BaseHintRank(string baseClass) => baseClass switch
+    {
+        "ACharacter" => 70,
+        "APlayerController" or "AAIController" => 65,
+        "AController" => 60,
+        "APawn" => 55,
+        "AGameModeBase" or "AGameStateBase" or "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or "AHUD" => 50,
+        "AActor" or "AVolume" => 40,
+        "UStaticMeshComponent" or "UPointLightComponent" or "USpotLightComponent" or "UDirectionalLightComponent" => 35,
+        "USceneComponent" => 30,
+        "UActorComponent" => 25,
+        "UUserWidget" or "UAnimInstance" or "UGameInstance" or "USaveGame" or "UDataAsset" => 20,
+        "UObject" => 0,
+        _ => 10
+    };
+
+    private static readonly Dictionary<string, string> EngineBaseByPath = new(StringComparer.Ordinal)
+    {
+        ["/Script/Engine.Actor"] = "AActor",
+        ["/Script/Engine.Pawn"] = "APawn",
+        ["/Script/Engine.Character"] = "ACharacter",
+        ["/Script/Engine.Controller"] = "AController",
+        ["/Script/Engine.PlayerController"] = "APlayerController",
+        ["/Script/AIModule.AIController"] = "AAIController",
+        ["/Script/Engine.PlayerState"] = "APlayerState",
+        ["/Script/Engine.GameModeBase"] = "AGameModeBase",
+        ["/Script/Engine.GameStateBase"] = "AGameStateBase",
+        ["/Script/Engine.HUD"] = "AHUD",
+        ["/Script/Engine.Volume"] = "AVolume",
+        ["/Script/Engine.LevelScriptActor"] = "ALevelScriptActor",
+        ["/Script/Engine.PlayerCameraManager"] = "APlayerCameraManager",
+        ["/Script/Engine.ActorComponent"] = "UActorComponent",
+        ["/Script/Engine.SceneComponent"] = "USceneComponent",
+        ["/Script/Engine.StaticMeshComponent"] = "UStaticMeshComponent",
+        ["/Script/Engine.LightComponent"] = "ULightComponent",
+        ["/Script/Engine.PointLightComponent"] = "UPointLightComponent",
+        ["/Script/Engine.SpotLightComponent"] = "USpotLightComponent",
+        ["/Script/Engine.DirectionalLightComponent"] = "UDirectionalLightComponent",
+        ["/Script/Engine.GameInstance"] = "UGameInstance",
+        ["/Script/Engine.GameUserSettings"] = "UGameUserSettings",
+        ["/Script/Engine.LocalPlayer"] = "ULocalPlayer",
+        ["/Script/Engine.SaveGame"] = "USaveGame",
+        ["/Script/Engine.DataAsset"] = "UDataAsset",
+        ["/Script/Engine.AnimInstance"] = "UAnimInstance",
+        ["/Script/UMG.UserWidget"] = "UUserWidget",
+        ["/Script/CoreUObject.Interface"] = "UInterface",
+        ["/Script/CoreUObject.Object"] = "UObject",
+    };
+
+    private static string? InferEngineBase(CUE4Parse.UE4.Assets.ResolvedObject? ro)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var cur = ro; cur != null && seen.Count < 64; )
+        {
+            var path = cur.GetPathName();
+            if (!seen.Add(path)) return null;
+            if (EngineBaseByPath.TryGetValue(path, out var engineBase)) return engineBase;
+
+            if (cur.TryLoad<CUE4Parse.UE4.Objects.UObject.UStruct>(out var s))
+            {
+                cur = s.SuperStruct?.ResolvedObject;
+                continue;
+            }
+
+            cur = cur.Super;
+        }
+        return null;
+    }
+
+    private HashSet<string>? _engineModuleNames;
+    /// <summary>All module names the engine provides: core engine modules + every module declared by an engine plugin
+    /// (scanned from Engine/Plugins/**.uplugin). Stubbing any of these as a project module collides with the engine.</summary>
+    private HashSet<string> EngineModuleNames()
+    {
+        if (_engineModuleNames != null) return _engineModuleNames;
+        var set = new HashSet<string>(EngineModules, StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var assoc = _opts.EngineAssociation;
+            foreach (var root in new[] { $@"C:\Program Files\Epic Games\UE_{assoc}\Engine\Plugins",
+                                         $@"D:\Program Files\Epic Games\UE_{assoc}\Engine\Plugins",
+                                         $@"C:\Epic Games\UE_{assoc}\Engine\Plugins" })
+            {
+                if (!Directory.Exists(root)) continue;
+                foreach (var up in Directory.EnumerateFiles(root, "*.uplugin", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        var j = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(up));
+                        if (j["Modules"] is Newtonsoft.Json.Linq.JArray mods)
+                            foreach (var m in mods) { var n = (string?)m["Name"]; if (!string.IsNullOrEmpty(n)) set.Add(n!); }
+                    }
+                    catch { }
+                }
+                break;
+            }
+        }
+        catch (Exception ex) { Log.Warning(ex, "Engine module scan failed; using core set only"); }
+        _engineModuleNames = set;
+        return set;
     }
 
     /// <summary>Walk an import's OuterIndex chain to the top-level package import name (e.g. "/Script/Pavlov").</summary>
@@ -215,13 +383,30 @@ public sealed class ContentWriter
         };
         lock (_manifestLock) Manifest.Add(entry);
 
-        if (asset.Package is Package gpkg) CollectGameTypes(gpkg); // gather game-class refs for --emit-stubs
+        // Skip if another source already produced this exact /Game package name (case-insensitive) — a second
+        // .uasset at the same package path crashes the editor with an FPackageId collision.
+        var pkgKey = (mount + "/" + relative.Replace('\\', '/'));
+        if (!_writtenPackages.TryAdd(pkgKey, 0))
+        {
+            entry.Fidelity = Fidelity.Failed;
+            entry.Note = "skipped: duplicate package name (case-insensitive collision)";
+            return entry;
+        }
+
+        CollectGameTypes(asset); // gather game-class refs for --emit-stubs (uniform: Zen + legacy)
 
         if (_opts.DryRun)
         {
             // Plan only: classify + report the intended output path, touch nothing on disk.
             entry.Note = "[dry-run] would reconstruct -> " + entry.OutputPath;
             Log.Information("[dry-run] {Type,-28} {Path}", asset.PrimaryType, asset.File.Path);
+            return entry;
+        }
+
+        if (IsHlodOrSimplygonStandin(asset.File.Path))
+        {
+            entry.Fidelity = Fidelity.Failed;
+            entry.Note = "skipped: HLOD/Simplygon standin package";
             return entry;
         }
 
@@ -274,21 +459,19 @@ public sealed class ContentWriter
                                                               : entry.Note + "; cube placeholder (mesh did not convert)";
             }
         }
-        else if (asset.PrimaryType is "Texture2D" && TryWriteRealTexture(asset, outputAsset, packageName, entry))
+        else if (asset.PrimaryType is "Texture2D" or "TextureCube" && TryWriteRealTexture(asset, outputAsset, packageName, entry))
         {
-            // editor UTexture2D with decoded PNG source written; skip the cooked uncooked write.
+            // editor UTexture2D/UTextureCube with decoded source written; skip the cooked uncooked write.
         }
         else if (asset.PrimaryType is "Material" or "MaterialInstanceConstant"
                  && TryWriteMaterialAsset(asset, outputAsset, packageName, entry))
         {
             // synth unlit material sampling the asset's first texture written; skip the cooked uncooked write.
         }
-        else if (!_opts.SkipBlueprints && IsBlueprintPackage(asset) && IsBlueprintReconstructable(asset)
-                 && (_opts.DangerBpGraph || IsOpenSafeBlueprint(asset))
+        else if (!_opts.SkipBlueprints && IsBlueprint(asset)
                  && TryWriteBlueprint(asset, outputAsset, packageName, entry))
         {
-            // reconstructed editor UBlueprint (+EventGraph) so it's browsable/openable; skip the cooked write.
-            // Default only does simple/open-safe BPs; --dangerously-dump-bpgraph forces all (may crash on open).
+            // BP: reskinned from --bp-template (Zen-safe, browsable/openable) or reconstructed (legacy 4.21, open-safe).
         }
         else if (!TryWriteUncooked(asset, outputAsset, entry))
             // No editor-loadable form for this type. Do NOT write a stub header: a half-formed .uasset reads as
@@ -300,6 +483,13 @@ public sealed class ContentWriter
         return entry;
     }
 
+    private static bool IsHlodOrSimplygonStandin(string path)
+    {
+        var p = path.Replace('\\', '/');
+        return p.Contains("/HLOD/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("/Simplygon/Standins/", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Decode the cooked texture and write an editor-loadable UTexture2D (PNG source). Returns false if
     /// the asset has no loadable UTexture2D (caller falls back).</summary>
     private bool TryWriteRealTexture(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
@@ -308,7 +498,7 @@ public sealed class ContentWriter
         {
             // Drive off the already-loaded exports (uniform for legacy Package AND Zen IoPackage) instead of the
             // legacy-only pkg.ExportMap table — so UE5 textures are found too.
-            var tex = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D>().FirstOrDefault();
+            var tex = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.Texture.UTexture>().FirstOrDefault();
             if (tex is null) return false;
             if (!Writer.TextureWriter.WriteEditorTexture(tex, outputAsset, Path.GetFileNameWithoutExtension(outputAsset), packageName))
                 return false;
@@ -324,35 +514,145 @@ public sealed class ContentWriter
     /// reference is found (caller falls back).</summary>
     private bool TryWriteMaterialAsset(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
     {
-        if (asset.Package is not Package pkg) return false;
+        var shortName = Path.GetFileNameWithoutExtension(outputAsset);
         try
         {
-            // Find a Texture2D import + its outer package path. Prefer /Game textures (we dump those).
+            // Find a Texture2D ref + its outer package path. Prefer /Game textures (we dump those). The legacy import
+            // table only exists for legacy Package; Zen/IoStore (UE5) carries no comparable ImportMap here, so for Zen
+            // we fall through to a flat material (still appears + opens; texture binding is a follow-up).
             string? texPkg = null, texName = null, anyPkg = null, anyName = null;
-            foreach (var imp in pkg.ImportMap)
+            // Uniform (Zen + legacy): a MaterialInstanceConstant binds textures via TextureParameterValues; each entry's
+            // ParameterValue is the Texture2D object. Resolve the first one's /Game package path so the synth material
+            // samples the real texture instead of being flat grey.
+            // Score candidates so we pick the BASE COLOR/diffuse texture, not the normal map — sampling a normal map
+            // as base color tints the whole scene green (tangent normals are green/blue dominant).
+            int bestScore = int.MinValue;
+            foreach (var exp in asset.Exports)
             {
-                if (imp.ClassName.Text != "Texture2D") continue;
-                var oi = imp.OuterIndex?.Index ?? 0;
-                if (oi >= 0) continue;
-                var pkgPath = pkg.ImportMap[-oi - 1].ObjectName.Text;
-                anyPkg ??= pkgPath; anyName ??= imp.ObjectName.Text;
-                if (pkgPath.StartsWith("/Game/")) { texPkg = pkgPath; texName = imp.ObjectName.Text; break; }
+                var tpvs = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("TextureParameterValues");
+                if (tpvs == null) continue;
+                foreach (var s in tpvs)
+                {
+                    var ro = s.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("ParameterValue")?.ResolvedObject;
+                    var path = ro?.GetPathName();
+                    if (string.IsNullOrEmpty(path)) continue;
+                    if (ro?.Class?.Name.Text == "TextureCube") continue;   // cubes aren't a 2D base-color sample
+                    var dot = path.LastIndexOf('.'); var slash = path.LastIndexOf('/');
+                    var p = dot > slash && dot > 0 ? path.Substring(0, dot) : path;
+                    var info = s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo");
+                    var key = ((info?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "") + " " + ro!.Name.Text).ToLowerInvariant();
+                    int score = 0;
+                    if (key.Contains("normal") || key.EndsWith("_n") || key.Contains("_orm") || key.Contains("rough") ||
+                        key.Contains("metal") || key.Contains("mask") || key.Contains("packed") || key.Contains("_ao") ||
+                        key.Contains("emiss") || key.Contains("_rma") || key.Contains("height")) score = -2;
+                    if (key.Contains("diff") || key.Contains("albedo") || key.Contains("basecolor") || key.Contains("base_color") ||
+                        key.Contains("color") || key.Contains("_d") || key.Contains("_bc") || key.Contains("diffuse")) score += 3;
+                    if (p.StartsWith("/Game/")) score += 1;
+                    anyPkg ??= p; anyName ??= ro.Name.Text;
+                    if (score > bestScore) { bestScore = score; texPkg = p; texName = ro.Name.Text; }
+                }
             }
-            texPkg ??= anyPkg; texName ??= anyName;
-            var shortName = Path.GetFileNameWithoutExtension(outputAsset);
-            if (texPkg is null || texName is null)
+            // If the best candidate is a non-color map (normal/packed only), don't bind it — flat is better than green.
+            if (bestScore < 0) { texPkg = null; texName = null; }
+            if (texPkg is null && asset.Package is Package pkg)
             {
-                // No texture reference: write a valid flat material rather than letting it fall through to an
-                // unparseable placeholder header (which crashes the editor when a map references it).
-                if (!Writer.MaterialWriter.WriteEditorMaterialFlat(outputAsset, shortName, packageName)) return false;
-                entry.Note = string.IsNullOrEmpty(entry.Note) ? "flat material (no texture ref)"
-                                                              : entry.Note + "; flat material (no texture ref)";
+                // Legacy import-table scan (when not resolvable via parsed properties).
+                foreach (var imp in pkg.ImportMap)
+                {
+                    if (imp.ClassName.Text != "Texture2D") continue;
+                    var oi = imp.OuterIndex?.Index ?? 0;
+                    if (oi >= 0) continue;
+                    var pkgPath = pkg.ImportMap[-oi - 1].ObjectName.Text;
+                    anyPkg ??= pkgPath; anyName ??= imp.ObjectName.Text;
+                    if (pkgPath.StartsWith("/Game/")) { texPkg = pkgPath; texName = imp.ObjectName.Text; break; }
+                }
+            }
+            // Only use the any-texture fallback when we didn't deliberately reject a non-color map (bestScore < 0).
+            if (bestScore >= 0) { texPkg ??= anyPkg; texName ??= anyName; }
+            // Recover UV tiling from scalar params ("U Tiling"/"V Tiling", or a single "Tiling"/"UVScale") so tiled
+            // surfaces (floors/walls/trims) repeat correctly instead of stretching one texel across the face.
+            float uTiling = 1f, vTiling = 1f;
+            foreach (var exp in asset.Exports)
+            {
+                var spvs = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("ScalarParameterValues");
+                if (spvs == null) continue;
+                foreach (var s in spvs)
+                {
+                    var nm = (s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")
+                                ?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "").ToLowerInvariant();
+                    var val = s.GetOrDefault<float>("ParameterValue");
+                    if (nm.Contains("u tiling") || nm == "utiling") uTiling = val;
+                    else if (nm.Contains("v tiling") || nm == "vtiling") vTiling = val;
+                    else if (nm == "tiling" || nm == "uvscale" || nm == "uv scale" || nm.Contains("texturescale")) { uTiling = val; vTiling = val; }
+                }
+            }
+            if (texPkg != null && texName != null
+                && Writer.MaterialWriter.WriteEditorMaterial(outputAsset, shortName, packageName, texPkg, texName, uTiling, vTiling))
+            {
+                entry.Note = string.IsNullOrEmpty(entry.Note) ? $"synth unlit material -> {texName}"
+                                                              : entry.Note + $"; synth unlit material -> {texName}";
                 return true;
             }
-            if (!Writer.MaterialWriter.WriteEditorMaterial(outputAsset, shortName, packageName, texPkg, texName))
-                return Writer.MaterialWriter.WriteEditorMaterialFlat(outputAsset, shortName, packageName);
-            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"synth unlit material -> {texName}"
-                                                          : entry.Note + $"; synth unlit material -> {texName}";
+            // No base-color texture: recover the material's base color from a VectorParameterValue (prototype/solid
+            // materials like MM_BasicColor store color as a "Color" param, not a texture). Pick the most base-color-like
+            // and bake it as the flat material's constant BaseColor (vs a meaningless grey).
+            uint baseColor = 0xFF808080u; int bestCol = -1;
+            foreach (var exp in asset.Exports)
+            {
+                var vpvs = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("VectorParameterValues");
+                if (vpvs == null) continue;
+                foreach (var s in vpvs)
+                {
+                    var nm = (s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")
+                                ?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "").ToLowerInvariant();
+                    int sc = 0;
+                    if (nm.Contains("emiss") || nm.Contains("spec") || nm.Contains("subsurf") || nm.Contains("fresnel")) sc = -2;
+                    if (nm == "color" || nm.Contains("basecolor") || nm.Contains("base color") || nm.Contains("albedo") ||
+                        nm.Contains("tint") || nm.Contains("diffuse")) sc += 3;
+                    if (sc <= bestCol) continue;
+                    var fc = s.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FLinearColor>("ParameterValue").ToFColor(true);
+                    bestCol = sc;
+                    baseColor = ((uint)fc.A << 24) | ((uint)fc.R << 16) | ((uint)fc.G << 8) | fc.B;
+                }
+            }
+            if (bestCol < 0) baseColor = 0xFF808080u;   // only emissive/spec colors -> keep neutral grey
+
+            // Recover emissive: only if a "Use Emissive"-style static switch is enabled, then take the
+            // "Emissive Color" vector param -> constant EmissiveColor input so emissive surfaces glow.
+            uint? emissive = null;
+            bool useEmissive = false;
+            foreach (var exp in asset.Exports)
+            {
+                var sp = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("StaticParametersRuntime");
+                var sw = sp?.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("StaticSwitchParameters");
+                if (sw == null) continue;
+                foreach (var s in sw)
+                {
+                    var nm = (s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")
+                                ?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "").ToLowerInvariant();
+                    if (nm.Contains("emissive") && s.GetOrDefault<bool>("Value")) useEmissive = true;
+                }
+            }
+            if (useEmissive)
+                foreach (var exp in asset.Exports)
+                {
+                    var vpvs = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("VectorParameterValues");
+                    if (vpvs == null) continue;
+                    foreach (var s in vpvs)
+                    {
+                        var nm = (s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")
+                                    ?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "").ToLowerInvariant();
+                        if (!nm.Contains("emiss")) continue;
+                        var fc = s.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FLinearColor>("ParameterValue").ToFColor(true);
+                        emissive = ((uint)fc.A << 24) | ((uint)fc.R << 16) | ((uint)fc.G << 8) | fc.B;
+                    }
+                }
+
+            // Fallback flat material so it shows + opens (vs an unparseable placeholder that crashes referencing maps).
+            if (!Writer.MaterialWriter.WriteEditorMaterialFlat(outputAsset, shortName, packageName, baseColor, emissive)) return false;
+            entry.Note = string.IsNullOrEmpty(entry.Note)
+                ? (bestCol >= 0 ? "recovered color material" : "flat material") + (emissive != null ? "+emissive" : "")
+                : entry.Note + (bestCol >= 0 ? "; recovered color material" : "; flat material") + (emissive != null ? "+emissive" : "");
             return true;
         }
         catch (Exception ex) { Log.Warning(ex, "Material write failed for {Path}", asset.File.Path); return false; }
@@ -441,8 +741,38 @@ public sealed class ContentWriter
         try
         {
             // Uniform over legacy Package + Zen IoPackage: find the StaticMesh in the already-loaded exports.
-            var sm = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh>().FirstOrDefault();
-            if (sm is null || !sm.TryConvert(out var cm) || cm.LODs.Count == 0) return false;
+            var meshes = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh>().ToList();
+            if (meshes.Count == 0) return false;
+            if (meshes.Count > 1)
+            {
+                var specs = new List<BlueprintGraphBuilder.MeshCloneSpec>(meshes.Count);
+                var converted = 0;
+                foreach (var smx in meshes)
+                {
+                    byte[]? smxBlob = null;
+                    MeshWriter.MeshBounds? smxBounds = null;
+                    IReadOnlyList<(string pkg, string name, string slot)>? smxMats = null;
+                    if (smx.TryConvert(out var cmx) && cmx.LODs.Count > 0)
+                    {
+                        smxMats = ResolveMeshMaterials(smx, asset.Package);
+                        var smxSlotCount = smxMats.Count > 0 ? smxMats.Count : 1;
+                        smxBlob = MeshWriter.BuildFRawMesh(cmx.LODs[0], smxSlotCount);
+                        smxBounds = MeshWriter.CalculateBounds(cmx.LODs[0]);
+                        converted++;
+                    }
+                    specs.Add(new BlueprintGraphBuilder.MeshCloneSpec(smx.Name, smxBlob, smxMats, smxBounds));
+                }
+
+                if (!BlueprintGraphBuilder.CloneMeshPackage(_opts.CubePath!, outputAsset, packageName, specs))
+                    return false;
+                entry.Note = string.IsNullOrEmpty(entry.Note)
+                    ? $"editor mesh package ({converted}/{meshes.Count} real geometry)"
+                    : entry.Note + $"; editor mesh package ({converted}/{meshes.Count} real geometry)";
+                return true;
+            }
+
+            var sm = meshes[0];
+            if (!sm.TryConvert(out var cm) || cm.LODs.Count == 0) return false;
 
             // Resolve materials FIRST so the FRawMesh's per-face slot indices can be clamped to the actual slot count.
             // Resolve via the mesh's StaticMaterials ResolvedObjects (works for both package types).
@@ -517,9 +847,219 @@ public sealed class ContentWriter
 
     /// <summary>Reconstruct an editor-openable UBlueprint (+EventGraph) from the cooked BP so it shows in the content
     /// browser. Falls back (returns false) on any failure -> plain uncooked write.</summary>
+    /// <summary>Recover the cooked BP's SimpleConstructionScript components (engine class, variable name, mesh,
+    /// transform) so they can be grafted into the reskinned BP. Reads SCS_Node exports uniformly (Zen + legacy).
+    /// Non-engine component classes are substituted with SceneComponent so the BP can't crash on a game class.</summary>
+    private static List<BlueprintGraphBuilder.ScsComp> RecoverScsComps(ParsedAsset asset)
+    {
+        var list = new List<BlueprintGraphBuilder.ScsComp>();
+        foreach (var exp in asset.Exports)
+        {
+            if (exp.ExportType != "SCS_Node") continue;
+            var ccRO = exp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("ComponentClass")?.ResolvedObject;
+            var compClass = ccRO?.Name.Text ?? "SceneComponent";
+            if (!(ccRO?.GetPathName() ?? "").StartsWith("/Script/Engine.", StringComparison.Ordinal)) compClass = "SceneComponent";
+            var varName = exp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("InternalVariableName").Text;
+            if (string.IsNullOrEmpty(varName) || varName == "None") varName = compClass;
+            if (varName == "DefaultSceneRoot") continue;   // the template already provides the root; skip the duplicate
+            string? meshPkg = null, meshName = null;
+            float[] loc = { 0, 0, 0 }, rot = { 0, 0, 0 }, scl = { 1, 1, 1 };
+            var tmpl = exp.GetOrDefault<CUE4Parse.UE4.Assets.Exports.UObject>("ComponentTemplate");
+            if (tmpl != null)
+            {
+                if (compClass.Contains("StaticMesh"))
+                {
+                    var mi = tmpl.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("StaticMesh")?.ResolvedObject;
+                    if (mi != null)
+                    {
+                        meshName = mi.Name.Text; var mp = mi.GetPathName();
+                        var dot = mp.LastIndexOf('.'); var sl = mp.LastIndexOf('/');
+                        meshPkg = dot > sl && dot > 0 ? mp.Substring(0, dot) : mp;
+                    }
+                }
+                var l = tmpl.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FVector>("RelativeLocation");
+                loc = new[] { (float)l.X, (float)l.Y, (float)l.Z };
+                var r = tmpl.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FRotator>("RelativeRotation");
+                rot = new[] { (float)r.Pitch, (float)r.Yaw, (float)r.Roll };
+                var s = tmpl.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FVector>("RelativeScale3D");
+                if (s.X != 0 || s.Y != 0 || s.Z != 0) scl = new[] { (float)s.X, (float)s.Y, (float)s.Z };
+            }
+            compClass = BlueprintGraphBuilder.NormalizeSynthComponentClass(compClass, meshName != null);
+            list.Add(new BlueprintGraphBuilder.ScsComp(compClass, varName, meshPkg, meshName, loc, rot, scl));
+        }
+        return list;
+    }
+
+    /// <summary>A Blueprint asset, detected uniformly (works for Zen/IoStore where ExportMap isn't a legacy table).</summary>
+    private static bool IsBlueprint(ParsedAsset asset) =>
+        asset.PrimaryType.EndsWith("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase)
+        || asset.PrimaryType.Equals("Blueprint", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True only for /Script paths whose module is an engine (or engine-plugin) module — i.e. a class
+    /// guaranteed to exist at editor load. Reparenting a cloned BP's BGC SuperIndex to a NON-engine (game/stub)
+    /// class is the crash vector: if that class isn't loaded, the super chain is null and CDO serialization
+    /// derefs -1 (EXCEPTION_ACCESS_VIOLATION reading 0xffffffffffffffff in CoreUObject).</summary>
+    private bool IsEngineModuleClassPath(string? scriptPath)
+    {
+        if (string.IsNullOrWhiteSpace(scriptPath) || !scriptPath.StartsWith("/Script/", StringComparison.Ordinal)) return false;
+        var dot = scriptPath.IndexOf('.', "/Script/".Length);
+        if (dot <= "/Script/".Length) return false;
+        return EngineModuleNames().Contains(scriptPath["/Script/".Length..dot]);
+    }
+
+    private static string? GetBlueprintParentClassPath(ParsedAsset asset)
+    {
+        foreach (var e in asset.Exports)
+        {
+            if (e is CUE4Parse.UE4.Objects.UObject.UStruct s
+                && AssetParser.ClassName(e).EndsWith("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase))
+            {
+                var path = s.SuperStruct.ResolvedObject?.GetPathName();
+                if (!string.IsNullOrWhiteSpace(path) && path != "None" && path.StartsWith("/Script/", StringComparison.Ordinal)) return path;
+            }
+            var parent = e.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("ParentClass")?.ResolvedObject?.GetPathName();
+            if (!string.IsNullOrWhiteSpace(parent) && parent != "None" && parent.StartsWith("/Script/", StringComparison.Ordinal)) return parent;
+        }
+        return null;
+    }
+
+    private static string? GetBlueprintParentEngineBase(ParsedAsset asset)
+    {
+        foreach (var e in asset.Exports)
+        {
+            if (e is CUE4Parse.UE4.Objects.UObject.UStruct s
+                && AssetParser.ClassName(e).EndsWith("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase))
+            {
+                var engineBase = InferEngineBase(s.SuperStruct.ResolvedObject);
+                if (!string.IsNullOrWhiteSpace(engineBase)) return engineBase;
+            }
+
+            var parent = e.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("ParentClass")?.ResolvedObject;
+            var parentBase = InferEngineBase(parent);
+            if (!string.IsNullOrWhiteSpace(parentBase)) return parentBase;
+        }
+        return null;
+    }
+
+    private string? GetStubBaseHintForClassPath(string? classPath)
+    {
+        if (string.IsNullOrWhiteSpace(classPath) || !classPath.StartsWith("/Script/", StringComparison.Ordinal)) return null;
+        if (EngineBaseByPath.TryGetValue(classPath, out var engineBase)) return engineBase;
+        var dot = classPath.LastIndexOf('.');
+        if (dot <= "/Script/".Length || dot + 1 >= classPath.Length) return null;
+        var module = classPath["/Script/".Length..dot];
+        var cls = classPath[(dot + 1)..];
+        return StubBaseHints.TryGetValue($"{module}.{cls}", out var baseClass) ? baseClass : GuessEngineBaseFromClassName(cls);
+    }
+
+    private static string? GuessEngineBaseFromClassName(string cls)
+    {
+        if (cls.EndsWith("Character", StringComparison.Ordinal)) return "ACharacter";
+        if (cls.EndsWith("PlayerController", StringComparison.Ordinal)) return "APlayerController";
+        if (cls.EndsWith("AIController", StringComparison.Ordinal)) return "AAIController";
+        if (cls.EndsWith("Controller", StringComparison.Ordinal)) return "AController";
+        if (cls.EndsWith("Pawn", StringComparison.Ordinal)) return "APawn";
+        if (cls.EndsWith("GameModeBase", StringComparison.Ordinal) || cls.EndsWith("GameMode", StringComparison.Ordinal)) return "AGameModeBase";
+        if (cls.EndsWith("GameStateBase", StringComparison.Ordinal) || cls.EndsWith("GameState", StringComparison.Ordinal)) return "AGameStateBase";
+        if (cls.EndsWith("PlayerState", StringComparison.Ordinal)) return "APlayerState";
+        if (cls.EndsWith("CameraManager", StringComparison.Ordinal) || cls.EndsWith("CameraManagerPawn", StringComparison.Ordinal)) return "APawn";
+        if (cls.EndsWith("HUD", StringComparison.Ordinal)) return "AHUD";
+        if (cls.EndsWith("Volume", StringComparison.Ordinal)) return "AVolume";
+        if (cls.EndsWith("UserWidget", StringComparison.Ordinal) || cls.EndsWith("Widget", StringComparison.Ordinal)) return "UUserWidget";
+        if (cls.EndsWith("AnimInstance", StringComparison.Ordinal)) return "UAnimInstance";
+        if (cls.EndsWith("SceneComponent", StringComparison.Ordinal)) return "USceneComponent";
+        if (cls.EndsWith("Component", StringComparison.Ordinal)) return "UActorComponent";
+        if (cls.EndsWith("DataAsset", StringComparison.Ordinal)) return "UDataAsset";
+        if (cls.EndsWith("Actor", StringComparison.Ordinal) || cls.Contains("Actor", StringComparison.Ordinal)) return "AActor";
+        return null;
+    }
+
+    private static bool IsActorTemplateCompatible(string? engineBase) => engineBase is null or
+        "AActor" or "APawn" or "ACharacter" or "AController" or "APlayerController" or "AAIController" or
+        "AGameModeBase" or "AGameStateBase" or "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or
+        "AHUD" or "AVolume";
+
+    private static string? ResolveBlueprintTemplate(string configuredTemplate, string? engineBase)
+    {
+        var dir = Directory.Exists(configuredTemplate)
+            ? configuredTemplate
+            : Path.GetDirectoryName(configuredTemplate);
+        string? Pick(params string[] names)
+        {
+            if (string.IsNullOrWhiteSpace(dir)) return null;
+            foreach (var name in names)
+            {
+                var path = Path.Combine(dir, name);
+                if (File.Exists(path)) return path;
+            }
+            return null;
+        }
+
+        var familyTemplate = engineBase switch
+        {
+            "ACharacter" => Pick("character.uasset", "bp_character.uasset"),
+            "APawn" => Pick("pawn.uasset", "bp_pawn.uasset"),
+            "AGameModeBase" => Pick("gamemodebase.uasset", "bp_gamemodebase.uasset"),
+            "UUserWidget" => Pick("UserWidget.uasset", "userwidget.uasset", "bp_widget.uasset"),
+            "UAnimInstance" => Pick("bp_animbp.uasset", "animbp.uasset"),
+            "USceneComponent" => Pick("scenecomponent.uasset", "bp_scenecomponent.uasset"),
+            "UActorComponent" => Pick("actorcomponent.uasset", "bp_actorcomponent.uasset"),
+            "AActor" or "AController" or "APlayerController" or "AAIController" or "AGameStateBase" or
+                "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or "AHUD" or "AVolume"
+                => Pick("actor.uasset", "ahctor.uasset", "bp_actor.uasset"),
+            _ => null
+        };
+        if (!string.IsNullOrWhiteSpace(familyTemplate)) return familyTemplate;
+        return File.Exists(configuredTemplate) && IsActorTemplateCompatible(engineBase) ? configuredTemplate : null;
+    }
+
     private bool TryWriteBlueprint(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
     {
+        // Preferred: reskin a known-good 4.21 BP template (valid UBlueprint+BGC+SCS) renamed to this BP. Works for
+        // UE5/Zen (we only need the target name) and is crash-safe, so cooked BPs show + open in the content browser.
+        if (!string.IsNullOrWhiteSpace(_opts.BpTemplate))
+        {
+            // Clone at 4.21 (the proven SynthPackageWriter format; 5.4 auto-upgrades it). The template MUST be a 4.21
+            // BP. Inject the cooked BP's recovered SCS components (mesh/transform) so they show in the Components panel.
+            var scs = RecoverScsComps(asset);
+            var recoveredCalls = (_opts.BpRecoverCalls || _opts.EmitStubMethods)
+                ? BlueprintGraphBuilder.ExtractCallsFromExports(asset.Exports)
+                : new List<(string scriptPkg, string cls, string func)>();
+            if (_opts.EmitStubMethods) CollectGameStubMethods(recoveredCalls);
+            var graphCalls = _opts.BpRecoverCalls
+                ? recoveredCalls
+                : new List<(string scriptPkg, string cls, string func)>();
+            var parentClass = GetBlueprintParentClassPath(asset);
+            // REPARENTING DISABLED. SCS recovery + real BP-class actor placement worked fine until we started
+            // patching the clone's UBlueprint.ParentClass / BlueprintGeneratedClass.SuperIndex to the recovered
+            // parent — that is the regression (it breaks BP construction/load even for engine parents, because the
+            // family template's CDO/SCS is shaped for the template's own parent, not the re-pointed super). The
+            // per-family template already gives the clone the correct base class, so no SuperIndex patch is needed.
+            // parentClass is still used below only as a hint for picking the family template.
+            string? reparentClass = null;
+            var parentEngineBase = GetBlueprintParentEngineBase(asset) ?? GetStubBaseHintForClassPath(parentClass);
+            var templatePath = ResolveBlueprintTemplate(_opts.BpTemplate!, parentEngineBase);
+            if (string.IsNullOrWhiteSpace(templatePath))
+            {
+                Log.Warning("Blueprint {Path}: no compatible BP template for parent base {Base} in/near {Template}; skipping BP clone until a matching template is supplied",
+                    asset.File.Path, parentEngineBase ?? "unknown", _opts.BpTemplate);
+                return false;
+            }
+            if (!BlueprintGraphBuilder.CloneBlueprintTemplate(templatePath, outputAsset,
+                    Path.GetFileNameWithoutExtension(outputAsset), packageName, CUE4Parse.UE4.Versions.EGame.GAME_UE4_21, scs, graphCalls, reparentClass))
+                return false;
+            var parentNote = string.IsNullOrWhiteSpace(parentClass) ? "" : $", parent={parentClass}";
+            var callsNote = _opts.BpRecoverCalls ? $", {graphCalls.Count} call node(s)" : "";
+            var methodsNote = _opts.EmitStubMethods ? $", {recoveredCalls.Count} recovered call ref(s)" : "";
+            var baseNote = string.IsNullOrWhiteSpace(parentEngineBase) ? "" : $", base={parentEngineBase}";
+            var templateNote = $", template={Path.GetFileName(templatePath)}";
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"blueprint (template + {scs.Count} SCS comp(s){callsNote}{methodsNote}{parentNote}{baseNote}{templateNote})"
+                                                          : entry.Note + $"; blueprint (template + {scs.Count} SCS comp(s){callsNote}{methodsNote}{parentNote}{baseNote}{templateNote})";
+            return true;
+        }
+        // Legacy byte-based reconstruction: 4.21 (legacy Package) only, gated to crash-safe BPs.
         if (asset.Package is not Package) return false;
+        if (!IsBlueprintReconstructable(asset) || !(_opts.DangerBpGraph || IsOpenSafeBlueprint(asset))) return false;
         try
         {
             var parts = _provider.SavePackage(asset.File.Path);

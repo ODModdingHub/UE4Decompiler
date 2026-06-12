@@ -14,7 +14,8 @@ public static class MaterialWriter
 {
     private const string DefaultTemplatePath = @"C:\Temp\A2Project\Content\A2\Maps\LookDev\Arenas\matitddy.uasset";
 
-    public static bool WriteEditorMaterialFlat(string outFile, string targetShort, string targetPackagePath)
+    public static bool WriteEditorMaterialFlat(string outFile, string targetShort, string targetPackagePath,
+        uint constantColorBgra = 0xFF808080u, uint? emissiveColorBgra = null)
     {
         var spw = new SynthPackageWriter(EGame.GAME_UE4_21, targetPackagePath);
         int enginePkg = spw.AddImport("/Script/CoreUObject", "Package", 0, "/Script/Engine");
@@ -24,7 +25,7 @@ public static class MaterialWriter
         const int matExport = 1;
         const int editorDataExport = 2;
 
-        var editorPayload = BuildEditorOnlyData(spw, expressionExport: 0, constantColorBgra: 0xFF808080u);
+        var editorPayload = BuildEditorOnlyData(spw, expressionExport: 0, constantColorBgra: constantColorBgra, emissiveColorBgra: emissiveColorBgra);
         var matPayload = BuildMaterialShell(spw, editorDataExport);
 
         spw.AddExport(targetShort, matClass, 0, 0, matPayload, objectFlags: 0x1 | 0x2 | 0x8, templatePkgIndex: 0, isAsset: true);
@@ -35,7 +36,7 @@ public static class MaterialWriter
     }
 
     public static bool WriteEditorMaterial(string outFile, string targetShort, string targetPackagePath,
-        string texturePackagePath, string textureName)
+        string texturePackagePath, string textureName, float uTiling = 1f, float vTiling = 1f)
     {
         var templatePath = Environment.GetEnvironmentVariable("MAT_TEMPLATE");
         if (string.IsNullOrWhiteSpace(templatePath)) templatePath = DefaultTemplatePath;
@@ -53,17 +54,23 @@ public static class MaterialWriter
 
         const int matExport = 1;
         const int editorDataExport = 2;
-        const int exprExport = 3;
+        const int exprExport = 3;        // TextureSample
+        // Only add a TextureCoordinate node when the material actually tiles (U/V != 1) — keeps simple materials simple.
+        bool tile = MathF.Abs(uTiling - 1f) > 0.001f || MathF.Abs(vTiling - 1f) > 0.001f;
+        int coordExport = tile ? 4 : 0;
+        int coordClass = tile ? spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MaterialExpressionTextureCoordinate") : 0;
 
         var matPayload = BuildMaterialShell(spw, editorDataExport);
-        var editorPayload = BuildEditorOnlyData(spw, exprExport, constantColorBgra: 0);
-        var exprPayload = BuildTextureSample(spw, matExport, texImp);
+        var editorPayload = BuildEditorOnlyData(spw, exprExport, constantColorBgra: 0, extraExpression: coordExport);
+        var exprPayload = BuildTextureSample(spw, matExport, texImp, coordExport);
 
         spw.AddExport(targetShort, matClass, 0, 0, matPayload, objectFlags: 0x1 | 0x2 | 0x8, templatePkgIndex: 0, isAsset: true);
         spw.AddExport("MaterialEditorOnlyData", editorDataClass, 0, matExport, editorPayload, objectFlags: 0x1 | 0x8, templatePkgIndex: 0, isAsset: false);
         spw.AddExport(targetShort + "_Sample", sampleClass, 0, matExport, exprPayload, objectFlags: 0x8, templatePkgIndex: 0, isAsset: false);
+        if (tile)
+            spw.AddExport(targetShort + "_TexCoord", coordClass, 0, matExport, BuildTextureCoordinate(spw, matExport, uTiling, vTiling), objectFlags: 0x8, templatePkgIndex: 0, isAsset: false);
         spw.Write(outFile);
-        Log.Information("Editor material {N} -> {Out} (tex {T})", targetShort, outFile, texturePackagePath + "." + textureName);
+        Log.Information("Editor material {N} -> {Out} (tex {T}, tiling {U}x{V})", targetShort, outFile, texturePackagePath + "." + textureName, uTiling, vTiling);
         return true;
     }
 
@@ -160,7 +167,8 @@ public static class MaterialWriter
         return ms.ToArray();
     }
 
-    private static byte[] BuildEditorOnlyData(SynthPackageWriter spw, int expressionExport, uint constantColorBgra)
+    private static byte[] BuildEditorOnlyData(SynthPackageWriter spw, int expressionExport, uint constantColorBgra,
+        uint? emissiveColorBgra = null, int extraExpression = 0)
     {
         using var ms = new MemoryStream();
         using var w = new FArchiveWriter(ms);
@@ -177,9 +185,28 @@ public static class MaterialWriter
             w.Write(constantColorBgra);
         });
 
+        // Recovered emissive (Use Emissive switch + Emissive Color param) -> constant EmissiveColor input (same
+        // ColorMaterialInput struct as BaseColor), so emissive surfaces (screens/lights) glow their real color.
+        if (emissiveColorBgra.HasValue)
+        {
+            t.Struct("EmissiveColor", "ColorMaterialInput", () =>
+            {
+                w.Write(0);                              // no Expression -> constant
+                w.Write(0);
+                w.Write(spw.Name("None")); w.Write(0);
+                w.Write(0);
+                w.Write(0); w.Write(0); w.Write(0); w.Write(0);
+                w.Write(1);                              // bUseConstant
+                w.Write(emissiveColorBgra.Value);
+            });
+        }
+
         t.Struct("ExpressionCollection", "MaterialExpressionCollection", () =>
         {
-            if (expressionExport != 0) t.ObjectArray("Expressions", new[] { expressionExport });
+            var exprs = new List<int>();
+            if (expressionExport != 0) exprs.Add(expressionExport);
+            if (extraExpression != 0) exprs.Add(extraExpression);
+            if (exprs.Count > 0) t.ObjectArray("Expressions", exprs);
             t.WriteNone();
         });
         t.WriteNone();
@@ -189,12 +216,38 @@ public static class MaterialWriter
         return ms.ToArray();
     }
 
-    private static byte[] BuildTextureSample(SynthPackageWriter spw, int matExport, int texImport)
+    private static byte[] BuildTextureSample(SynthPackageWriter spw, int matExport, int texImport, int coordExpr = 0)
     {
         using var ms = new MemoryStream();
         using var w = new FArchiveWriter(ms);
         var t = new TaggedPropertyWriter(w, spw.Name);
         t.Object("Texture", texImport);
+        // Wire UV tiling: Coordinates input <- a TextureCoordinate expression (FExpressionInput, no constant).
+        if (coordExpr != 0)
+            t.Struct("Coordinates", "ExpressionInput", () =>
+            {
+                w.Write(coordExpr);                       // Expression (FPackageIndex)
+                w.Write(0);                               // OutputIndex
+                w.Write(spw.Name("None")); w.Write(0);    // InputName
+                w.Write(0);                               // Mask
+                w.Write(0); w.Write(0); w.Write(0); w.Write(0);   // MaskR/G/B/A
+            });
+        t.Object("Material", matExport);
+        t.GuidStruct("MaterialExpressionGuid", FGuid16.NewGuid());
+        t.WriteNone();
+        w.Write(0); // UObject bSerializeGuid
+        w.Flush();
+        return ms.ToArray();
+    }
+
+    private static byte[] BuildTextureCoordinate(SynthPackageWriter spw, int matExport, float uTiling, float vTiling)
+    {
+        using var ms = new MemoryStream();
+        using var w = new FArchiveWriter(ms);
+        var t = new TaggedPropertyWriter(w, spw.Name);
+        t.Int("CoordinateIndex", 0);
+        t.Float("UTiling", uTiling);
+        t.Float("VTiling", vTiling);
         t.Object("Material", matExport);
         t.GuidStruct("MaterialExpressionGuid", FGuid16.NewGuid());
         t.WriteNone();

@@ -281,9 +281,15 @@ public static class WriterSelfTest
         }
         catch (Exception ex) { Log.Error(ex, "parse failed"); return; }
 
-        List<UObject> exports;
-        try { exports = ((IPackage)pkg).GetExports().ToList(); }
-        catch (Exception ex) { Log.Error(ex, "GetExports failed"); return; }
+        // Resilient: deserialize each export independently so one bad export
+        // (e.g. BlueprintGeneratedClass bytecode CUE4Parse can't parse) doesn't
+        // abort dumping the rest (the K2Node/EdGraph exports we actually want).
+        var exports = new List<UObject?>();
+        for (var ei = 0; ei < pkg.ExportsLazy.Length; ei++)
+        {
+            try { exports.Add(pkg.ExportsLazy[ei].Value); }
+            catch (Exception ex) { exports.Add(null); Log.Warning("  export[{I}] {Cls} deserialize failed: {Msg}", ei, pkg.ExportMap[ei].ClassName, ex.Message); }
+        }
 
         Log.Information("== {File}: {N} export(s) ==  fileLen={Len} header={Header} names={Names}@{NameOff} imports={Imports}@{ImpOff} exports={Exports}@{ExpOff} ar@{ArOff} bulkStart={Bulk} flags={Flags}",
             Path.GetFileName(path), exports.Count, data.Length, pkg.Summary.TotalHeaderSize,
@@ -344,7 +350,9 @@ public static class WriterSelfTest
         for (var i = 0; i < exports.Count; i++)
         {
             var e = exports[i];
-            Log.Information("EXPORT[{I}] {Name} : {Type}  ({P} props)", i, e.Name, e.ExportType, e.Properties.Count);
+            if (e is null) { Log.Information("EXPORT[{I}] <failed to deserialize> class={Cls}", i, pkg.ExportMap[i].ClassName); continue; }
+            Log.Information("EXPORT[{I}] {Name} : {Type}  ({P} props) objGuid={G} expEnd={End}", i, e.Name, e.ExportType, e.Properties.Count,
+                e.ObjectGuid?.ToString() ?? "none", pkg.ExportMap[i].SerialOffset + pkg.ExportMap[i].SerialSize);
             foreach (var p in e.Properties) DumpProp(p, "    ");
         }
     }

@@ -120,6 +120,15 @@ public static class Program
         [Option("cube", HelpText = "Engine Cube StaticMesh path, cloned as a loadable placeholder for each referenced mesh.")]
         public string? Cube { get; set; }
 
+        [Option("bp-template", HelpText = "Empty 4.21 editor Blueprint (.uasset) reskinned per cooked BP so blueprints show + open in the content browser (works for UE5/Zen).")]
+        public string? BpTemplate { get; set; }
+
+        [Option("bp-recover-calls", HelpText = "Experimental: recover cooked Blueprint bytecode calls as K2 CallFunction graph nodes. Off by default because malformed refs can destabilize editor load.")]
+        public bool BpRecoverCalls { get; set; }
+
+        [Option("emit-stub-methods", HelpText = "Experimental: emit recovered name-only UFUNCTION methods on generated game-native C++ stubs. Off by default; use with --bp-recover-calls when testing call binding.")]
+        public bool EmitStubMethods { get; set; }
+
         [Option("content-root", HelpText = "Project Content dir; placeholder meshes are written here at their /Game paths.")]
         public string? ContentRoot { get; set; }
 
@@ -489,6 +498,12 @@ public bool GenMeshAll { get; set; }
             }
 
             var packages = extractor.EnumeratePackages(o.Filter).ToList();
+            // Dedup case-insensitively: A2 has case-inconsistent paths (e.g. Districts/Tackleball vs Districts/TackleBall)
+            // that write to the same file on Windows but register as the SAME UE package -> FPackageId collision crash.
+            var beforeDedup = packages.Count;
+            packages = packages.GroupBy(p => p.Path.ToLowerInvariant()).Select(g => g.First()).ToList();
+            if (packages.Count != beforeDedup)
+                Log.Information("Deduped {N} case-variant duplicate package path(s)", beforeDedup - packages.Count);
             if (packages.Count == 0)
             {
                 Log.Error("No packages found (check --filter / AES key / input path).");
@@ -529,7 +544,10 @@ public bool GenMeshAll { get; set; }
                 EmitStubs = emitStubs,
                 DangerBpGraph = o.DangerouslyDumpBpGraph,
                 MapTemplate = o.Template,
-                CubePath = o.Cube
+                CubePath = o.Cube,
+                BpTemplate = o.BpTemplate,
+                BpRecoverCalls = o.BpRecoverCalls,
+                EmitStubMethods = o.EmitStubMethods
             };
 
             // 4. Scaffold project (skipped on dry-run).
@@ -545,7 +563,8 @@ public bool GenMeshAll { get; set; }
 
             // 6. Generate C++ stub modules for referenced game-native classes (so game-subclassed blueprints resolve).
             if (emitStubs && !o.DryRun)
-                new Output.Stubs.StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, writer.GameStubs.Values.ToList(), writer.StubBaseHints);
+                new Output.Stubs.StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, writer.GameStubs.Values.ToList(),
+                    writer.StubBaseHints, opts.EmitStubMethods ? writer.StubMethodHints.Keys.ToList() : new List<string>());
 
             // 7. Manifest + summary.
             if (o.Report && !o.DryRun) WriteReport(opts, writer.Manifest);
