@@ -211,6 +211,16 @@ public sealed class TaggedPropertyWriter
         EndTag(so, vs);
     }
 
+    /// <summary>Array of TEnumAsByte&lt;Enum&gt; values — inner type is ByteProperty but each element is the enum
+    /// ENTRY FName (8 bytes), not a raw byte (verified against an editor-saved FTextureSource.LayerFormat).</summary>
+    public void ByteEnumArray(string name, IReadOnlyList<string> entryNames)
+    {
+        var so = BeginTag(name, "ArrayProperty", () => FName("ByteProperty")); var vs = _w.Position;
+        _w.Write(entryNames.Count);
+        foreach (var e in entryNames) FName(e);
+        EndTag(so, vs);
+    }
+
     /// <summary>UStaticMesh.StaticMaterials — an ArrayProperty of FStaticMaterial structs (4.21 array-of-struct
     /// layout: count, one inner StructProperty tag, then each element = MaterialInterface(Object) + MaterialSlotName
     /// (Name) + None). Editor recomputes UVChannelData. Slot i's MaterialInterface = matImports[i] (FPackageIndex).</summary>

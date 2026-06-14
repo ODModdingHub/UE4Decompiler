@@ -26,6 +26,7 @@ public sealed class SynthPackageWriter
     /// SHOWS in the content browser from disk (without this — e.g. AssetRegistryDataOffset=0 — maps only appear
     /// once explicitly loaded). Same record shape the material special-case uses (proven to index in UE5.1).</summary>
     public (string name, string classPath)? PrimaryArAsset;
+    private long _arDepBlobRel = -1;   // offset of the dependency section within the AR buffer (for DependencyDataOffset patch)
     /// <summary>If set, write these EXACT custom versions (GUID+version) instead of the hardcoded 4.21 set.
     /// CRITICAL when reusing real editor payloads: the engine deserializes them against the summary's
     /// custom versions, so a mismatch corrupts reads (Assertion SerializeNum>=0).</summary>
@@ -141,6 +142,9 @@ public sealed class SynthPackageWriter
         var dependsOffset = exportOffset + exportsSize;
         var arOffset = SuppressAssetRegistry ? 0 : dependsOffset + dependsBuf.Length;
         var headerSize = dependsOffset + dependsBuf.Length + arBuf.Length;
+        // Patch the AR record's DependencyDataOffset to the absolute file offset of its dependency section.
+        if (_arDepBlobRel >= 0)
+            BitConverter.GetBytes((long)(arOffset + _arDepBlobRel)).CopyTo(arBuf, 0);
 
         var offsets = new int[_exports.Count];
         var cursor = headerSize; var totalPayload = 0;
@@ -219,18 +223,32 @@ public sealed class SynthPackageWriter
 
     private (byte[] buf, int count) SerializeAssetRegistry()
     {
-        // Primary-asset record (e.g. a map's World): one UE5.1 package-AR entry so the content browser indexes the
-        // package from disk. Mirrors the material special-case record (leading DependencyDataOffset int64, asset
-        // count, FString name + full class path, tag count, observed UE5.1 tail) which is verified to index.
+        // Primary-asset record (e.g. a map's World): one package-AR entry so the content browser indexes the package
+        // from disk. We emit a 4.21-FORMAT package (summary isUe5 = false), so the gatherer reads the AR block as
+        // pre-UE5 data — exactly the format UncookedPackageWriter uses for materials, which DO show:
+        //   int32 ObjectCount, per asset { FString ObjectPath, FString ClassName, int32 TagCount, (FString,FString)... }
+        // NO int64 DependencyDataOffset prefix and NO trailing dependency section — those are UE5-ONLY. Emitting them
+        // in a 4.21 package made the gatherer read our int64 file-offset's low bytes as ObjectCount -> rejected with
+        // "EReadPackageDataMainErrorCode::InvalidObjectCount" (map dropped, never shown) or, on some maps, start
+        // looping thousands of bogus entries and read past EOF -> the "Requested read of 4 bytes when 0 bytes remain"
+        // flood. (Earlier gt_empty/gt_onecube byte-matching was misleading: those are UE5-SAVED packages, a different
+        // on-disk AR layout than what a 4.21 package's gatherer path reads.)
         if (PrimaryArAsset is { } pa)
         {
             using var pms = new MemoryStream(); using var pw = new FArchiveWriter(pms);
-            pw.Write(0x00001E1B); pw.Write(0);     // DependencyDataOffset (int64) — value not validated for indexing
-            pw.Write(1);                           // asset count
-            pw.WriteFString(pa.name);
-            pw.WriteFString(pa.classPath);
-            pw.Write(0);                           // tag count (none needed for visibility)
-            pw.Write(10); pw.Write(0x2EF); pw.Write(1); pw.Write(0u);   // tail observed in UE5.1 records
+            pw.Write(1);                           // ObjectCount
+            pw.WriteFString(pa.name);              // ObjectPath (object name, relative to package, for a top-level asset)
+            pw.WriteFString(pa.classPath);         // ClassName (full path, e.g. /Script/Engine.World)
+            if (pa.classPath.EndsWith(".World", StringComparison.Ordinal))
+            {
+                pw.Write(5);                       // World tags (mark it as a Map asset for the browser)
+                pw.WriteFString("PrimaryAssetType");    pw.WriteFString("Map");
+                pw.WriteFString("PrimaryAssetName");    pw.WriteFString(_packageName);
+                pw.WriteFString("LevelBoundsLocation"); pw.WriteFString("V(0)");
+                pw.WriteFString("LevelBoundsExtent");   pw.WriteFString("V(0)");
+                pw.WriteFString("DateModified");        pw.WriteFString("0001.01.01-00.00.00");
+            }
+            else pw.Write(0);                      // TagCount = 0
             pw.Flush();
             return (pms.ToArray(), 1);
         }

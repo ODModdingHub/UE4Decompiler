@@ -1,6 +1,8 @@
 using CommandLine;
 using CUE4Parse.UE4.Versions;
+using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Textures;
 using Newtonsoft.Json;
 using Serilog;
 using Serilog.Events;
@@ -71,6 +73,18 @@ public static class Program
 
         [Option("list-files", HelpText = "Dev: list mounted virtual paths containing this substring, then exit.")]
         public string? ListFiles { get; set; }
+
+        [Option("export-texture-pngs", HelpText = "Decode every UTexture2D to a PNG at <dir>/<game-relative-path>.png (+ .json sidecar with srgb/normal), then exit. Feed <dir> to the ReimportTextures.py editor script. Use --filter to scope.")]
+        public string? ExportTexturePngs { get; set; }
+
+        [Option("dump-mesh-uv", HelpText = "Dev: load a static mesh by vpath substring, TryConvert it, and print LOD0 vert count + UV range + first verts' Position/UV (to check the UV read).")]
+        public string? DumpMeshUv { get; set; }
+
+        [Option("find-id-collisions", HelpText = "Dev: scan a Content dir, compute FPackageId per .uasset, and report paths that share an id (the FPackageId-collision crash). No pak mount.")]
+        public string? FindIdCollisions { get; set; }
+
+        [Option("fix-id-collisions", HelpText = "Fix FPackageId case-collisions in a Content dir IN PLACE: rewrite every /Game reference string to the canonical on-disk case (same length) + refresh name-table case hashes. No pak mount, no re-dump.")]
+        public string? FixIdCollisions { get; set; }
 
         [Option("extract-file", HelpText = "Dev: extract one package (umap/uasset + uexp combined) by virtual-path substring to --output.")]
         public string? ExtractFile { get; set; }
@@ -186,6 +200,92 @@ public bool GenMeshAll { get; set; }
         {
             Log.Information("Decoding {File}", o.Decode);
             Output.Writer.WriterSelfTest.RawDumpImports(File.ReadAllBytes(o.Decode));
+            return 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(o.FindIdCollisions))
+        {
+            // Scan an output Content dir, compute FPackageId (CityHash64 of the lowercased /Game path) per .uasset,
+            // and report ids shared by >1 distinct path — the exact pairs that trip UE5's "FPackageId collision" assert.
+            var contentDir = o.FindIdCollisions.TrimEnd('\\', '/');
+            var byId = new Dictionary<ulong, HashSet<string>>();
+            var enc = System.Text.Encoding.Latin1;
+            var rx = new System.Text.RegularExpressions.Regex(@"/Game/[A-Za-z0-9_/.]+");
+            void AddPath(string p)
+            {
+                var id = CUE4Parse.UE4.IO.Objects.FPackageId.FromName(p).id;
+                if (!byId.TryGetValue(id, out var set)) byId[id] = set = new HashSet<string>(StringComparer.Ordinal);
+                set.Add(p);
+            }
+            int files = 0;
+            foreach (var file in Directory.EnumerateFiles(contentDir, "*.uasset", SearchOption.AllDirectories))
+            {
+                files++;
+                var rel = file[(contentDir.Length + 1)..].Replace('\\', '/');
+                if (rel.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)) rel = rel[..^7];
+                AddPath("/Game/" + rel);                                   // the asset's own (disk-derived) package name
+                try
+                {
+                    using var fs = File.OpenRead(file);
+                    var n = (int)Math.Min(262144, fs.Length);
+                    var buf = new byte[n]; fs.ReadExactly(buf, 0, n);
+                    foreach (System.Text.RegularExpressions.Match m in rx.Matches(enc.GetString(buf)))
+                        AddPath(m.Value);                                   // every /Game reference (import) string inside
+                }
+                catch { }
+            }
+            int collisions = 0;
+            foreach (var kv in byId)
+            {
+                if (kv.Value.Count < 2) continue;                          // same id, >1 distinct spelling = the crash
+                collisions++;
+                Log.Warning("FPackageId {Id} <- {N} spellings:", kv.Key, kv.Value.Count);
+                foreach (var p in kv.Value) Console.WriteLine("    " + p);
+            }
+            Log.Information("Scanned {F} .uasset under {Dir}: {C} colliding id(s)", files, contentDir, collisions);
+            return 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(o.FixIdCollisions))
+        {
+            var contentDir = o.FixIdCollisions.TrimEnd('\\', '/');
+            var enc = System.Text.Encoding.Latin1;
+            var rx = new System.Text.RegularExpressions.Regex(@"/Game/[A-Za-z0-9_/.]+");
+            // Canonical case = the on-disk package path (what the editor mounts each file as).
+            var canon = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var file in Directory.EnumerateFiles(contentDir, "*.uasset", SearchOption.AllDirectories))
+            {
+                var rel = file[(contentDir.Length + 1)..].Replace('\\', '/');
+                if (rel.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)) rel = rel[..^7];
+                var gp = "/Game/" + rel;
+                canon[gp.ToLowerInvariant()] = gp;          // last writer wins; case-variants of one folder all map to it
+            }
+            int filesChanged = 0, refsFixed = 0;
+            foreach (var file in Directory.EnumerateFiles(contentDir, "*.uasset", SearchOption.AllDirectories))
+            {
+                byte[] bytes;
+                try { bytes = File.ReadAllBytes(file); } catch { continue; }
+                var txt = enc.GetString(bytes);
+                bool dirty = false;
+                foreach (System.Text.RegularExpressions.Match m in rx.Matches(txt))
+                {
+                    var s = m.Value;
+                    if (!canon.TryGetValue(s.ToLowerInvariant(), out var c) || c == s || c.Length != s.Length) continue;
+                    var start = m.Index;
+                    for (var i = 0; i < c.Length; i++) bytes[start + i] = (byte)c[i];   // same-length case overwrite
+                    // If this is a name-table FString entry ([int32 len=chars+1][chars][\0][u32 nonCaseHash][u32 caseHash]),
+                    // refresh the case-preserving hash (the case-insensitive one is unchanged).
+                    if (start >= 4 && BitConverter.ToInt32(bytes, start - 4) == s.Length + 1)
+                    {
+                        var caseHashPos = start + s.Length + 1 + 4;
+                        if (caseHashPos + 4 <= bytes.Length)
+                            BitConverter.GetBytes(Output.Writer.FCrc.CasePreservingHash(c)).CopyTo(bytes, caseHashPos);
+                    }
+                    dirty = true; refsFixed++;
+                }
+                if (dirty) { File.WriteAllBytes(file, bytes); filesChanged++; }
+            }
+            Log.Information("Fixed {R} case-mismatched reference(s) across {F} file(s) in {Dir}", refsFixed, filesChanged, contentDir);
             return 0;
         }
 
@@ -335,6 +435,72 @@ public bool GenMeshAll { get; set; }
                     .OrderBy(k => k).Take(200).ToList();
                 Log.Information("{N} match(es) for '{S}':", hits.Count, o.ListFiles);
                 foreach (var h in hits) Console.WriteLine("  " + h);
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.ExportTexturePngs))
+            {
+                var outDir = o.ExportTexturePngs;
+                var keys = extractor.EnumeratePackages(o.Filter)
+                    .Select(f => f.Path)
+                    .Where(k => k.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                int ok = 0, skip = 0, fail = 0;
+                foreach (var key in keys)
+                {
+                    CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D? tex = null;
+                    try
+                    {
+                        var pkg = extractor.Provider.LoadPackage(key);
+                        for (var i = 0; i < pkg.ExportsLazy.Length; i++)
+                            try { if (pkg.ExportsLazy[i].Value is CUE4Parse.UE4.Assets.Exports.Texture.UTexture2D t) { tex = t; break; } } catch { }
+                    }
+                    catch { }
+                    if (tex is null) { skip++; continue; }
+                    try
+                    {
+                        var decoded = tex.Decode(ETexturePlatform.DesktopMobile);
+                        if (decoded is null) { fail++; continue; }
+                        using var bmp = decoded.ToSkBitmap();
+                        using var img = SkiaSharp.SKImage.FromBitmap(bmp);
+                        using var data = img.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+                        // virtual key "<Mount>/Content/<rel>.uasset" -> game-relative "<rel>", mirrored under outDir.
+                        var ci = key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
+                        var rel = (ci >= 0 ? key[(ci + 9)..] : key);
+                        rel = rel[..^".uasset".Length];
+                        var pngPath = Path.Combine(outDir, rel.Replace('/', Path.DirectorySeparatorChar) + ".png");
+                        Directory.CreateDirectory(Path.GetDirectoryName(pngPath)!);
+                        using (var fs = File.Create(pngPath)) data.SaveTo(fs);
+                        File.WriteAllText(Path.ChangeExtension(pngPath, ".json"),
+                            $"{{\"game\":\"/Game/{rel}\",\"srgb\":{(tex.SRGB ? "true" : "false")},\"normal\":{(tex.IsNormalMap ? "true" : "false")},\"compression\":\"{tex.CompressionSettings}\"}}");
+                        ok++;
+                    }
+                    catch (Exception ex) { Log.Warning("texture {K}: {M}", key, ex.Message); fail++; }
+                }
+                Log.Information("Exported {OK} texture PNG(s) ({Skip} non-texture, {Fail} failed) -> {Dir}", ok, skip, fail, outDir);
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.DumpMeshUv))
+            {
+                var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.DumpMeshUv, StringComparison.OrdinalIgnoreCase) && k.EndsWith(".uasset"));
+                if (key == null) { Log.Error("no package match for '{S}'", o.DumpMeshUv); return 1; }
+                var pkg = extractor.Provider.LoadPackage(key);
+                CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh? sm = null;
+                for (var i = 0; i < pkg.ExportsLazy.Length; i++)
+                    try { if (pkg.ExportsLazy[i].Value is CUE4Parse.UE4.Assets.Exports.StaticMesh.UStaticMesh m) { sm = m; break; } } catch { }
+                if (sm is null) { Log.Error("no UStaticMesh in {K}", key); return 1; }
+                if (!sm.TryConvert(out var cm) || cm.LODs.Count == 0) { Log.Error("TryConvert failed / no LODs"); return 1; }
+                var lod = cm.LODs[0];
+                var verts = lod.Verts!;
+                float uMin = float.MaxValue, uMax = float.MinValue, vMin = float.MaxValue, vMax = float.MinValue;
+                foreach (var vv in verts) { var uv = vv.UV; if (uv.U < uMin) uMin = uv.U; if (uv.U > uMax) uMax = uv.U; if (uv.V < vMin) vMin = uv.V; if (uv.V > vMax) vMax = uv.V; }
+                Log.Information("Mesh {K}: {V} verts, {T} texcoords, UV range U[{Umin}..{Umax}] V[{Vmin}..{Vmax}]",
+                    key, verts.Length, lod.NumTexCoords, uMin, uMax, vMin, vMax);
+                for (var i = 0; i < Math.Min(8, verts.Length); i++)
+                    Log.Information("  vert[{I}] pos=({X},{Y},{Z}) uv=({U},{V})", i,
+                        verts[i].Position.X, verts[i].Position.Y, verts[i].Position.Z, verts[i].UV.U, verts[i].UV.V);
                 return 0;
             }
             if (o.GenMeshAll)

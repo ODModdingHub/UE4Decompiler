@@ -48,7 +48,8 @@ public sealed class TextureReconstructor
                 Properties = texture.Properties // preserve raw property tags
             };
 
-            Log.Information("Texture {Name}: wrote {W}x{H} PNG", texture.Name, bitmap.Width, bitmap.Height);
+            Log.Information("Texture {Name}: wrote {W}x{H} PNG  [fmt={Fmt} srgb={SRGB} comp={Comp} normal={NM} colortype={CT}]",
+                texture.Name, bitmap.Width, bitmap.Height, texture.Format, texture.SRGB, texture.CompressionSettings, texture.IsNormalMap, bitmap.ColorType);
             var result = new ReconstructionResult { Fidelity = Fidelity.Full, Model = model };
             result.SidecarFiles.Add(Path.GetFileName(pngPath));
             return result;

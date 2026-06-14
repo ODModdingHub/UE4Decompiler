@@ -32,10 +32,14 @@ public static class TextureWriter
                 int dw = raw.Width, dh = raw.Height;
                 using var bmp = (raw.ColorType == SKColorType.Bgra8888 && raw.AlphaType == SKAlphaType.Unpremul)
                     ? raw : raw.Copy(SKColorType.Bgra8888);
-                png = bmp.Bytes;          // BGRA8888 == TSF_BGRA8 byte order; uncompressed (no decompress needed in UE5)
+                png = bmp.Bytes;          // raw BGRA8888. NOTE: UE5.1 still mis-lays-out this source (sheared/recolored)
+                                          // because it expects an FEditorBulkData end-of-file payload, not our 4.21
+                                          // inline FByteBulkData. PNG-compressed source (TSCF_PNG) is worse — UE5
+                                          // builds 0 mips (black) from the inline bulk. A correct UE5.1 editor texture
+                                          // needs the FEditorBulkData payload + package trailer (TODO).
                 w = dw; h = dh; numSlices = 1;
-                if (isCube && dw > 0 && dh == dw * 6) { numSlices = 6; h = dw; }   // vertical 6-face strip -> 6 slices WxW
                 if (LooksBlackOrEmpty(png)) Log.Warning("Texture {N}: decoded all black/empty ({W}x{H})", targetShort, dw, dh);
+                if (isCube && dw > 0 && dh == dw * 6) { numSlices = 6; h = dw; }   // vertical 6-face strip -> 6 slices WxW
             }
         }
         catch (Exception ex) { Log.Warning(ex, "Texture {N}: decode failed", targetShort); return false; }
@@ -57,10 +61,12 @@ public static class TextureWriter
             inner.Int("SizeY", h);
             inner.Int("NumSlices", numSlices);
             inner.Int("NumMips", 1);
-            inner.Bool("bPNGCompressed", false);                                                  // raw, not PNG (4.21 reads this)
-            inner.ByteEnum("CompressionFormat", "ETextureSourceCompressionFormat", "TSCF_None");   // UE5: source bulk is uncompressed
+            inner.Bool("bPNGCompressed", false);                                                  // raw bulk, not PNG
+            inner.ByteEnum("CompressionFormat", "ETextureSourceCompressionFormat", "TSCF_None");    // UE5: source bulk is uncompressed
             inner.Bool("bGuidIsHash", false);                                                     // UE5: Id is a plain guid, not a content hash
             inner.ByteEnum("Format", "ETextureSourceFormat", "TSF_BGRA8");
+            inner.ByteEnumArray("LayerFormat", new[] { "TSF_BGRA8" });                              // per-layer format (UE5 reads this, not Format) — without it the editor mis-laid-out the raw source (shear + channel swap)
+            inner.Int64Array("BlockDataOffsets", new long[] { 0 });                                 // single block at bulk offset 0 (matches editor-saved source)
             inner.WriteNone();
         });
         t.Struct("ImportedSize", "IntPoint", () => { aw.Write(w); aw.Write(h); });

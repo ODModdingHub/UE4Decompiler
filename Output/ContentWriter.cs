@@ -320,23 +320,31 @@ public sealed class ContentWriter
         try
         {
             var assoc = _opts.EngineAssociation;
-            foreach (var root in new[] { $@"C:\Program Files\Epic Games\UE_{assoc}\Engine\Plugins",
-                                         $@"D:\Program Files\Epic Games\UE_{assoc}\Engine\Plugins",
-                                         $@"C:\Epic Games\UE_{assoc}\Engine\Plugins" })
+            var engineRoot = new[] { $@"C:\Program Files\Epic Games\UE_{assoc}\Engine",
+                                     $@"D:\Program Files\Epic Games\UE_{assoc}\Engine",
+                                     $@"C:\Epic Games\UE_{assoc}\Engine" }.FirstOrDefault(Directory.Exists);
+            if (engineRoot != null)
             {
-                if (!Directory.Exists(root)) continue;
-                foreach (var up in Directory.EnumerateFiles(root, "*.uplugin", SearchOption.AllDirectories))
+                // Every engine module ships a "<ModuleName>.Build.cs". Collect them ALL from both Engine/Source AND
+                // Engine/Plugins — engine RUNTIME modules (NNE, ChaosSolverEngine, ...) live in Engine/Source, not just
+                // plugins, so a Plugins-only/.uplugin scan misses them and we'd stub them as project modules. Creating
+                // a Source/<EngineModule> shadow then breaks UBT ("engine plugin should not reference project module").
+                int added = 0;
+                foreach (var sub in new[] { "Source", "Plugins" })
                 {
-                    try
+                    var dir = Path.Combine(engineRoot, sub);
+                    if (!Directory.Exists(dir)) continue;
+                    foreach (var bcs in Directory.EnumerateFiles(dir, "*.Build.cs", SearchOption.AllDirectories))
                     {
-                        var j = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(up));
-                        if (j["Modules"] is Newtonsoft.Json.Linq.JArray mods)
-                            foreach (var m in mods) { var n = (string?)m["Name"]; if (!string.IsNullOrEmpty(n)) set.Add(n!); }
+                        var fn = Path.GetFileName(bcs);
+                        if (fn.EndsWith(".Build.cs", StringComparison.OrdinalIgnoreCase) && set.Add(fn[..^".Build.cs".Length]))
+                            added++;
                     }
-                    catch { }
                 }
-                break;
+                Log.Information("Engine module scan: {N} module(s) from {Root}", added, engineRoot);
             }
+            else
+                Log.Warning("Engine root for UE_{Assoc} not found; engine-module exclusion uses the core set only (game stubs may shadow engine modules)", assoc);
         }
         catch (Exception ex) { Log.Warning(ex, "Engine module scan failed; using core set only"); }
         _engineModuleNames = set;
@@ -915,10 +923,14 @@ public sealed class ContentWriter
                 && AssetParser.ClassName(e).EndsWith("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase))
             {
                 var path = s.SuperStruct.ResolvedObject?.GetPathName();
-                if (!string.IsNullOrWhiteSpace(path) && path != "None" && path.StartsWith("/Script/", StringComparison.Ordinal)) return path;
+                if (!string.IsNullOrWhiteSpace(path) && path != "None"
+                    && (path.StartsWith("/Script/", StringComparison.Ordinal) || path.StartsWith("/Game/", StringComparison.Ordinal)))
+                    return path;
             }
             var parent = e.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("ParentClass")?.ResolvedObject?.GetPathName();
-            if (!string.IsNullOrWhiteSpace(parent) && parent != "None" && parent.StartsWith("/Script/", StringComparison.Ordinal)) return parent;
+            if (!string.IsNullOrWhiteSpace(parent) && parent != "None"
+                && (parent.StartsWith("/Script/", StringComparison.Ordinal) || parent.StartsWith("/Game/", StringComparison.Ordinal)))
+                return parent;
         }
         return null;
     }
@@ -1007,7 +1019,7 @@ public sealed class ContentWriter
             "AActor" or "AController" or "APlayerController" or "AAIController" or "AGameStateBase" or
                 "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or "AHUD" or "AVolume"
                 => Pick("actor.uasset", "ahctor.uasset", "bp_actor.uasset"),
-            _ => null
+            _ => Pick("actor.uasset", "ahctor.uasset", "bp_actor.uasset")
         };
         if (!string.IsNullOrWhiteSpace(familyTemplate)) return familyTemplate;
         return File.Exists(configuredTemplate) && IsActorTemplateCompatible(engineBase) ? configuredTemplate : null;

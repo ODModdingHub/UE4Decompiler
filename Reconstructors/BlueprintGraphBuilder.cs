@@ -942,7 +942,7 @@ public static class BlueprintGraphBuilder
         // Place actors from any /Script/ module. Game-native actor classes (/Script/Pavlov.*) get a stub, and we
         // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
         // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
-        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
+        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
         foreach (var e in srcExports)
         {
             // Top-level actor = export whose Outer is the PersistentLevel.
@@ -955,7 +955,12 @@ public static class BlueprintGraphBuilder
             var actorCls = cls;
             // This actor's component children (names are unique within the level).
             var comps = srcExports.Where(c => c.Outer?.Name.Text == e.Name && c.ExportType.EndsWith("Component")).ToList();
-            var rootComp = comps.FirstOrDefault();
+            // Use the actor's ACTUAL RootComponent — its RelativeLocation/Rotation/Scale IS the world placement
+            // transform (a root has no parent). FirstOrDefault() can return a non-root child (which sits at its local
+            // origin), which is why BP actors kept their rotation but landed at 0,0,0.
+            var rootRef = e.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("RootComponent")?.ResolvedObject;
+            var rootComp = (rootRef != null ? comps.FirstOrDefault(c => c.Name == rootRef.Name) : null)
+                ?? comps.FirstOrDefault();
             if (rootComp == null) continue;
             // The mesh often lives on a child StaticMeshComponent (esp. for BP actors), not the root. Prefer one that
             // actually has a StaticMesh so BP props place their real mesh instead of an empty StaticMeshActor.
@@ -991,6 +996,12 @@ public static class BlueprintGraphBuilder
                 actorPkg = "/Script/Engine"; actorCls = "LevelInstance";
                 if (compPkg != "/Script/Engine") { compPkg = "/Script/Engine"; compCls = "SceneComponent"; }
             }
+            else if (actorCls.EndsWith("ReflectionCapture", StringComparison.Ordinal) ||
+                     compCls.EndsWith("ReflectionCaptureComponent", StringComparison.Ordinal))
+            {
+                actorPkg = "/Script/Engine"; actorCls = "Actor";
+                compPkg = "/Script/Engine"; compCls = "SceneComponent";
+            }
             else if (isBp && bpClass is { pkg: { } bpPkg, name: { } bpName })
             {
                 actorPkg = bpPkg;
@@ -1013,11 +1024,49 @@ public static class BlueprintGraphBuilder
                 if (IsHlodOrStandinPath(meshPkg)) continue;
                 compPkg = "/Script/Engine";
                 compCls = NormalizeSynthComponentClass(compCls, meshName != null);
-                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, rootComp));
+                // AStaticMeshActor's root is ALWAYS a UStaticMeshComponent (a native root subobject). If the actor has
+                // no resolvable mesh, NormalizeSynthComponentClass downgrades the component to SceneComponent — but then
+                // the editor deserializes AStaticMeshActor's StaticMeshComponent over our SceneComponent export, reads a
+                // native count from the wrong bytes (a transform float), and floods reads to EOF on map load. Keep the
+                // root a StaticMeshComponent (a mesh-less one is valid — empty StaticMesh). Fixes mesh-less
+                // StaticMeshActors AND AxTextRenderActors (both substituted to the StaticMeshActor engine class).
+                if (actorCls == "StaticMeshActor") compCls = "StaticMeshComponent";
+                // Per-instance material overrides (UMeshComponent.OverrideMaterials): a world can re-skin a shared mesh
+                // per placement. Capture the cooked component's array so the placed component shows the right material
+                // instead of the mesh's defaults. Null/None slots stay null (= use the mesh default for that slot).
+                var overrideMats = new List<(string? pkg, string? name, string? cls)>();
+                try
+                {
+                    var omArr = meshComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex[]>("OverrideMaterials");
+                    if (omArr != null)
+                        foreach (var om in omArr)
+                        {
+                            var ro = om?.ResolvedObject;
+                            overrideMats.Add(ro != null ? (PackagePathOfResolved(ro), ro.Name.Text, ro.Class?.Name.Text) : (null, null, null));
+                        }
+                }
+                catch { }
+                while (overrideMats.Count > 0 && overrideMats[^1].pkg == null) overrideMats.RemoveAt(overrideMats.Count - 1); // trim trailing default slots
+                if (overrideMats.All(m => m.pkg == null)) overrideMats.Clear();
+                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, rootComp));
             }
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
         Log.Information("Cooked actors to place: {N} -> {L}", place.Count, string.Join(", ", place.Select(p => $"{p.label}({p.actorClass})")));
+
+        // DEV isolation: SKIP_ACTOR_CLASSES drops placed actors whose class CONTAINS a listed token (case-insensitive);
+        // "*" drops them ALL (emit the template-only map). Used to bisect a map-load fault the editor won't name.
+        var skipTokens = Environment.GetEnvironmentVariable("SKIP_ACTOR_CLASSES");
+        if (!string.IsNullOrWhiteSpace(skipTokens))
+        {
+            var toks = skipTokens.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            int before = place.Count;
+            place = toks.Contains("*")
+                ? new()
+                : place.Where(p => !toks.Any(t => p.actorClass.Contains(t, StringComparison.OrdinalIgnoreCase)
+                                                || p.label.Contains(t, StringComparison.OrdinalIgnoreCase))).ToList();
+            Log.Warning("SKIP_ACTOR_CLASSES='{S}': dropped {N} placed actor(s) ({B} -> {A})", skipTokens, before - place.Count, before, place.Count);
+        }
 
         // Gather streaming sublevels from the source UWorld so the reskinned persistent map preserves its world
         // composition. UWorld.StreamingLevels (native tail, after tagged-None) -> ULevelStreaming exports, each with a
@@ -1086,8 +1135,8 @@ public static class BlueprintGraphBuilder
         Array.Copy(data, (int)tpkg.ExportMap[lvlExport].SerialOffset, lvlPayload, 0, lvlPayload.Length);
         int lvlPostNone = NodePayloadWalker.SkipTaggedProperties(lvlPayload, 0, noneIdx);
 
-        // Emit a World asset-registry record (instead of suppressing the AR -> AssetRegistryDataOffset=0) so the
-        // editor's on-disk scan INDEXES the map and it shows in the content browser without having to load it.
+        // Emit a World asset-registry record (with the import-count-sized dependency section SynthPackageWriter now
+        // writes) so the editor's on-disk scan INDEXES the map and it shows in the content browser without loading it.
         var spw = new SynthPackageWriter(EGame.GAME_UE4_21, targetPackagePath)
         { PrimaryArAsset = (targetShort, "/Script/Engine.World") };
         spw.PackageFlags = (uint)tpkg.Summary.PackageFlags;
@@ -1128,7 +1177,11 @@ public static class BlueprintGraphBuilder
             if (classImpCache.TryGetValue(key, out var c)) return c;
             if (!pkgImpCache.TryGetValue(pkgPath, out var pImp))
             { pImp = FindPackageImport(tpkg, pkgPath); if (pImp == 0) pImp = spw.AddImport("/Script/CoreUObject", "Package", 0, pkgPath); pkgImpCache[pkgPath] = pImp; }
-            c = spw.AddImport("/Script/CoreUObject", "Class", pImp, cls); classImpCache[key] = c; return c;
+            if (pkgPath.StartsWith("/Game/", StringComparison.Ordinal) && cls.EndsWith("_C", StringComparison.Ordinal))
+                c = spw.AddImport("/Script/Engine", "BlueprintGeneratedClass", pImp, cls);
+            else
+                c = spw.AddImport("/Script/CoreUObject", "Class", pImp, cls);
+            classImpCache[key] = c; return c;
         }
 
         // Append synthesized component+actor pairs.
@@ -1151,9 +1204,23 @@ public static class BlueprintGraphBuilder
                 if (!pkgImpCache.TryGetValue(a.meshPkg, out var mp)) { mp = spw.AddImport("/Script/CoreUObject", "Package", 0, a.meshPkg); pkgImpCache[a.meshPkg] = mp; }
                 meshObjImp = spw.AddImport("/Script/Engine", "StaticMesh", mp, a.meshName);
             }
+            // Per-instance material overrides -> object imports (null slot = 0 = use mesh default for that slot).
+            int[] overrideMatImps = System.Array.Empty<int>();
+            if (a.compClass == "StaticMeshComponent" && a.overrideMats.Count > 0)
+            {
+                overrideMatImps = new int[a.overrideMats.Count];
+                for (int mi = 0; mi < a.overrideMats.Count; mi++)
+                {
+                    var (mpkg, mname, mcls) = a.overrideMats[mi];
+                    if (mpkg == null || mname == null) { overrideMatImps[mi] = 0; continue; }
+                    if (!pkgImpCache.TryGetValue(mpkg, out var mp)) { mp = spw.AddImport("/Script/CoreUObject", "Package", 0, mpkg); pkgImpCache[mpkg] = mp; }
+                    overrideMatImps[mi] = spw.AddImport("/Script/Engine", string.IsNullOrEmpty(mcls) ? "MaterialInstanceConstant" : mcls, mp, mname);
+                }
+            }
             using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
                 var t = new TaggedPropertyWriter(w, spw.Name);
                 if (meshObjImp != 0 && a.compClass == "StaticMeshComponent") t.Object("StaticMesh", meshObjImp);
+                if (overrideMatImps.Length > 0) t.ObjectArray("OverrideMaterials", overrideMatImps);
                 WriteLightComponentProperties(t, a.sourceComp, a.compClass);
                 // Mark Movable so the editor never bakes static lighting for these synthesized components —
                 // Lightmass derefs null on placed lights/meshes that lack full bake data (Build Lighting crash).
@@ -1168,12 +1235,17 @@ public static class BlueprintGraphBuilder
                     t.Enum("CreationMethod", "EComponentCreationMethod", "EComponentCreationMethod::SimpleConstructionScript");
                 }
                 t.WriteNone();
-                // Native tail after None. Ground truth (UE5.1 saved placed BP actor) + the editor's "Serial size
-                // mismatch: Got 210 Expected 214" assertion show a SceneComponent's empty tail is a single int32
-                // (UCSModifiedProperties count = 0); StaticMeshComponent adds one more (LODData). Adding a leading
-                // bHasGuid here over-ran by 4 bytes, so the component tail is left at the original (correct) length.
+                // Native tail after None — sizes confirmed by the editor's LOAD path (LinkerLoad serial-size asserts),
+                // which is what matters (an editor-SAVED gt_onecube reads LONGER tails, but that's a save-side artifact,
+                // not what load deserializes): SceneComponent = 4 bytes (1 int32 = UCSModifiedProperties), adding more
+                // crashes "Got 210 Expected 214"; StaticMeshComponent = 8 bytes (UCSMod + LODData), adding more crashes
+                // "Got 243 Expected 247". Do NOT add a trailing int32 here.
                 w.Write(0);                                             // UActorComponent: UCSModifiedProperties count = 0
-                if (a.compClass == "StaticMeshComponent") w.Write(0);   // UStaticMeshComponent: extra native int32
+                // NOTE: do NOT write the legacy FStaticShadowDepthMapData here. ULightComponent reads it only when
+                // FRenderingObjectVersion < MapBuildDataSeparatePackage; our package's Dev-Rendering custom version is
+                // newer, so the editor/CUE4Parse do NOT read it — writing it desyncs the component (CUE4Parse: "Could
+                // not read PointLightComponent correctly"). The original (no shadow map) tail is correct.
+                if (a.compClass == "StaticMeshComponent") w.Write(0);   // UStaticMeshComponent: LODData count = 0
                 w.Flush();
                 spw.AddExportRaw(spw.Name(a.compName), 0, ClassImp(a.compPkg, a.compClass), 0, 0, actorPkg, ms.ToArray(), isBpActor ? 0u : 0x1u, false);
             }
@@ -1191,10 +1263,10 @@ public static class BlueprintGraphBuilder
                 }
                 if (a.worldAsset != null) t.SoftObject("WorldAsset", a.worldAsset);   // LevelInstance embedded level
                 t.WriteNone();
-                // Native tail: single int32 (original length). The editor's "Got 200 Expected 204" assertion shows an
-                // extra leading int32 over-runs by 4; the SCS-instance tagged props (added above) are what fixed the
-                // hang, not the tail length, so the actor tail stays at its original single int32.
-                w.Write(0);                                                      // AActor native tail (all actors, incl LevelInstance)
+                // Native tail = a single int32 (4 bytes) for ALL actors — confirmed by the editor LOAD path: a
+                // StaticMeshActor with an 8-byte tail crashes "Got 93 Expected 97" (NetVarTriggerApplier_0), and a BP
+                // actor over-adds to "Got 200 Expected 204". Do NOT add a trailing int32 here.
+                w.Write(0);                                                      // AActor native tail (all actors)
                 w.Flush();
                 spw.AddExportRaw(spw.Name(a.label), 0, ClassImp(a.actorPkg, a.actorClass), 0, 0, lvlPkg, ms.ToArray(), isBpActor ? 0x8u : (0x1u | 0x4u), false);
             }
