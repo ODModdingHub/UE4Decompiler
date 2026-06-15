@@ -167,7 +167,7 @@ public sealed class SynthPackageWriter
     private byte[] SerializeNames()
     {
         using var ms = new MemoryStream(); using var w = new FArchiveWriter(ms);
-        foreach (var n in _names) { w.WriteFString(n); w.Write(FCrc.NonCasePreservingHash(n)); w.Write(FCrc.CasePreservingHash(n)); }
+        foreach (var raw in _names) { var n = PackagePathCanon.Normalize(raw); w.WriteFString(n); w.Write(FCrc.NonCasePreservingHash(n)); w.Write(FCrc.CasePreservingHash(n)); }
         w.Flush(); return ms.ToArray();
     }
 

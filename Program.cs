@@ -80,6 +80,12 @@ public static class Program
         [Option("dump-mesh-uv", HelpText = "Dev: load a static mesh by vpath substring, TryConvert it, and print LOD0 vert count + UV range + first verts' Position/UV (to check the UV read).")]
         public string? DumpMeshUv { get; set; }
 
+        [Option("find-hidden-actors", HelpText = "Dev: scan mounted .umap files and report actors hidden/invisible in the cooked source (bHidden / bVisible=false / bHiddenInGame). Use --filter to scope.")]
+        public bool FindHiddenActors { get; set; }
+
+        [Option("dump-actor-tree", HelpText = "Dev: load one .umap (by vpath substring) and print each PersistentLevel actor with its child components, their class/mesh/transform/material+visibility overrides.")]
+        public string? DumpActorTree { get; set; }
+
         [Option("find-id-collisions", HelpText = "Dev: scan a Content dir, compute FPackageId per .uasset, and report paths that share an id (the FPackageId-collision crash). No pak mount.")]
         public string? FindIdCollisions { get; set; }
 
@@ -211,26 +217,27 @@ public bool GenMeshAll { get; set; }
             var byId = new Dictionary<ulong, HashSet<string>>();
             var enc = System.Text.Encoding.Latin1;
             var rx = new System.Text.RegularExpressions.Regex(@"/Game/[A-Za-z0-9_/.]+");
+            static string PkgOf(string s) { var d = s.IndexOf('.'); return d >= 0 ? s[..d] : s; }  // strip .Object suffix
             void AddPath(string p)
             {
+                p = PkgOf(p);
                 var id = CUE4Parse.UE4.IO.Objects.FPackageId.FromName(p).id;
                 if (!byId.TryGetValue(id, out var set)) byId[id] = set = new HashSet<string>(StringComparer.Ordinal);
                 set.Add(p);
             }
             int files = 0;
-            foreach (var file in Directory.EnumerateFiles(contentDir, "*.uasset", SearchOption.AllDirectories))
+            foreach (var file in Directory.EnumerateFiles(contentDir, "*.u*", SearchOption.AllDirectories))
             {
+                if (!file.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) && !file.EndsWith(".umap", StringComparison.OrdinalIgnoreCase)) continue;
                 files++;
                 var rel = file[(contentDir.Length + 1)..].Replace('\\', '/');
                 if (rel.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)) rel = rel[..^7];
+                else if (rel.EndsWith(".umap", StringComparison.OrdinalIgnoreCase)) rel = rel[..^5];
                 AddPath("/Game/" + rel);                                   // the asset's own (disk-derived) package name
                 try
                 {
-                    using var fs = File.OpenRead(file);
-                    var n = (int)Math.Min(262144, fs.Length);
-                    var buf = new byte[n]; fs.ReadExactly(buf, 0, n);
-                    foreach (System.Text.RegularExpressions.Match m in rx.Matches(enc.GetString(buf)))
-                        AddPath(m.Value);                                   // every /Game reference (import) string inside
+                    foreach (System.Text.RegularExpressions.Match m in rx.Matches(enc.GetString(File.ReadAllBytes(file))))
+                        AddPath(m.Value);                                   // every /Game reference inside (full file)
                 }
                 catch { }
             }
@@ -251,35 +258,41 @@ public bool GenMeshAll { get; set; }
             var contentDir = o.FixIdCollisions.TrimEnd('\\', '/');
             var enc = System.Text.Encoding.Latin1;
             var rx = new System.Text.RegularExpressions.Regex(@"/Game/[A-Za-z0-9_/.]+");
-            // Canonical case = the on-disk package path (what the editor mounts each file as).
-            var canon = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var file in Directory.EnumerateFiles(contentDir, "*.uasset", SearchOption.AllDirectories))
+            bool IsPkg(string f) => f.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".umap", StringComparison.OrdinalIgnoreCase);
+            string RelPkg(string file)
             {
                 var rel = file[(contentDir.Length + 1)..].Replace('\\', '/');
                 if (rel.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)) rel = rel[..^7];
-                var gp = "/Game/" + rel;
-                canon[gp.ToLowerInvariant()] = gp;          // last writer wins; case-variants of one folder all map to it
+                else if (rel.EndsWith(".umap", StringComparison.OrdinalIgnoreCase)) rel = rel[..^5];
+                return "/Game/" + rel;
             }
+            // Canonical case = the on-disk package path (what the editor mounts each file as) — covers .uasset AND .umap.
+            var canon = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var file in Directory.EnumerateFiles(contentDir, "*.u*", SearchOption.AllDirectories))
+                if (IsPkg(file)) { var gp = RelPkg(file); canon[gp.ToLowerInvariant()] = gp; }
             int filesChanged = 0, refsFixed = 0;
-            foreach (var file in Directory.EnumerateFiles(contentDir, "*.uasset", SearchOption.AllDirectories))
+            foreach (var file in Directory.EnumerateFiles(contentDir, "*.u*", SearchOption.AllDirectories))
             {
+                if (!IsPkg(file)) continue;
                 byte[] bytes;
                 try { bytes = File.ReadAllBytes(file); } catch { continue; }
-                var txt = enc.GetString(bytes);
                 bool dirty = false;
-                foreach (System.Text.RegularExpressions.Match m in rx.Matches(txt))
+                foreach (System.Text.RegularExpressions.Match m in rx.Matches(enc.GetString(bytes)))
                 {
                     var s = m.Value;
-                    if (!canon.TryGetValue(s.ToLowerInvariant(), out var c) || c == s || c.Length != s.Length) continue;
+                    var dot = s.IndexOf('.');
+                    var pkg = dot >= 0 ? s[..dot] : s;                       // /Game/Pkg.Object -> normalize just /Game/Pkg
+                    if (!canon.TryGetValue(pkg.ToLowerInvariant(), out var cpkg) || cpkg == pkg || cpkg.Length != pkg.Length) continue;
                     var start = m.Index;
-                    for (var i = 0; i < c.Length; i++) bytes[start + i] = (byte)c[i];   // same-length case overwrite
-                    // If this is a name-table FString entry ([int32 len=chars+1][chars][\0][u32 nonCaseHash][u32 caseHash]),
-                    // refresh the case-preserving hash (the case-insensitive one is unchanged).
+                    for (var i = 0; i < cpkg.Length; i++) bytes[start + i] = (byte)cpkg[i];   // same-length case overwrite of the package part
+                    // Name-table FString entry? ([int32 len=chars+1][chars][\0][u32 nonCaseHash][u32 caseHash]) -> refresh
+                    // the case-preserving hash over the FULL (modified) string. Case-insensitive hash is unchanged.
                     if (start >= 4 && BitConverter.ToInt32(bytes, start - 4) == s.Length + 1)
                     {
+                        var full = dot >= 0 ? cpkg + s[dot..] : cpkg;
                         var caseHashPos = start + s.Length + 1 + 4;
                         if (caseHashPos + 4 <= bytes.Length)
-                            BitConverter.GetBytes(Output.Writer.FCrc.CasePreservingHash(c)).CopyTo(bytes, caseHashPos);
+                            BitConverter.GetBytes(Output.Writer.FCrc.CasePreservingHash(full)).CopyTo(bytes, caseHashPos);
                     }
                     dirty = true; refsFixed++;
                 }
@@ -417,6 +430,11 @@ public bool GenMeshAll { get; set; }
                 Log.Warning("UE5 target without --usmap: unversioned packages will NOT parse. Dump a .usmap from the running game (UE4SS/Dumper-7) and pass --usmap.");
             var parser = new AssetParser(extractor.Provider);
 
+            // Canonical-case map for /Game package paths, built from the mounted file list. Writers consult this
+            // at name-table serialization time to emit one consistent folder-case spelling, preventing the
+            // "FPackageId collision" assert without any lossy in-place patching. See PackagePathCanon.
+            Output.Writer.PackagePathCanon.Build(extractor.Provider.Files.Keys);
+
             if (!string.IsNullOrWhiteSpace(o.DumpVPath))
             {
                 var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
@@ -478,6 +496,95 @@ public bool GenMeshAll { get; set; }
                     catch (Exception ex) { Log.Warning("texture {K}: {M}", key, ex.Message); fail++; }
                 }
                 Log.Information("Exported {OK} texture PNG(s) ({Skip} non-texture, {Fail} failed) -> {Dir}", ok, skip, fail, outDir);
+                return 0;
+            }
+
+            if (o.FindHiddenActors)
+            {
+                var keys = extractor.EnumeratePackages(o.Filter)
+                    .Select(f => f.Path)
+                    .Where(k => k.EndsWith(".umap", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                int mapsWithHidden = 0, hiddenTotal = 0;
+                foreach (var key in keys)
+                {
+                    List<string> hits = new();
+                    try
+                    {
+                        var pkg = extractor.Provider.LoadPackage(key);
+                        var exports = pkg.GetExports().ToList();
+                        foreach (var e in exports)
+                        {
+                            if (e.Outer?.Name.Text != "PersistentLevel") continue;
+                            var cls = e.ExportType;
+                            if (cls.EndsWith("Component") || cls is "Model" or "Brush" or "Polys" or "Level" or "World" or "WorldSettings") continue;
+                            bool aHidden = e.GetOrDefault<bool>("bHidden", false);
+                            bool editorOnly = e.GetOrDefault<bool>("bIsEditorOnlyActor", false);
+                            // rendering component: mesh-bearing child, else any child component
+                            var comps = exports.Where(c => c.Outer?.Name.Text == e.Name && c.ExportType.EndsWith("Component")).ToList();
+                            var rc = comps.FirstOrDefault(c => c.ExportType.Contains("StaticMesh")) ?? comps.FirstOrDefault();
+                            bool cInvis = rc != null && !rc.GetOrDefault<bool>("bVisible", true);
+                            bool cHig = rc != null && rc.GetOrDefault<bool>("bHiddenInGame", false);
+                            if (aHidden || editorOnly || cInvis || cHig)
+                            {
+                                var flags = string.Join(",",
+                                    (aHidden ? new[] { "bHidden" } : System.Array.Empty<string>())
+                                    .Concat(editorOnly ? new[] { "bIsEditorOnlyActor" } : System.Array.Empty<string>())
+                                    .Concat(cInvis ? new[] { "bVisible=false" } : System.Array.Empty<string>())
+                                    .Concat(cHig ? new[] { "bHiddenInGame" } : System.Array.Empty<string>()));
+                                hits.Add($"    {e.Name} ({cls}) [{flags}]");
+                            }
+                        }
+                    }
+                    catch { continue; }
+                    if (hits.Count > 0)
+                    {
+                        mapsWithHidden++; hiddenTotal += hits.Count;
+                        Console.WriteLine($"{key}  ({hits.Count} hidden)");
+                        foreach (var h in hits.Take(12)) Console.WriteLine(h);
+                        if (hits.Count > 12) Console.WriteLine($"    ... +{hits.Count - 12} more");
+                    }
+                }
+                Log.Information("Scanned {N} map(s): {M} have hidden/invisible actors ({T} total)", keys.Count, mapsWithHidden, hiddenTotal);
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.DumpActorTree))
+            {
+                var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.DumpActorTree, StringComparison.OrdinalIgnoreCase) && k.EndsWith(".umap", StringComparison.OrdinalIgnoreCase));
+                if (key == null) { Log.Error("no .umap match for '{S}'", o.DumpActorTree); return 1; }
+                Log.Information("Actor tree for {Key}", key);
+                var pkg = extractor.Provider.LoadPackage(key);
+                var exports = pkg.GetExports().ToList();
+                string V(CUE4Parse.UE4.Assets.Exports.UObject c, string n, string def = "") {
+                    var fp = c.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>(n)?.ResolvedObject;
+                    if (fp != null) return fp.Name.Text;
+                    return def;
+                }
+                string Vec(CUE4Parse.UE4.Assets.Exports.UObject c, string n) {
+                    var s = c.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FVector>(n);
+                    return $"{s.X:0.#},{s.Y:0.#},{s.Z:0.#}";
+                }
+                foreach (var e in exports)
+                {
+                    if (e.Outer?.Name.Text != "PersistentLevel") continue;
+                    if (e.ExportType.EndsWith("Component")) continue;
+                    bool isBp = !e.Class?.Name.Text?.StartsWith("/Script") == true || (e.Class?.Name.Text?.EndsWith("_C") ?? false);
+                    Console.WriteLine($"ACTOR {e.Name} : {e.ExportType}  (class={e.Class?.Name.Text})  bHidden={e.GetOrDefault<bool>("bHidden", false)}");
+                    var comps = exports.Where(c => c.Outer?.Name.Text == e.Name && c.ExportType.EndsWith("Component")).ToList();
+                    foreach (var c in comps)
+                    {
+                        var mesh = V(c, "StaticMesh");
+                        var om = c.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex[]>("OverrideMaterials");
+                        var omStr = om == null ? "" : "  OverrideMaterials=[" + string.Join(",", om.Select(x => x?.ResolvedObject?.Name.Text ?? "null")) + "]";
+                        string flags = "";
+                        if (!c.GetOrDefault<bool>("bVisible", true)) flags += " bVisible=false";
+                        if (c.GetOrDefault<bool>("bHiddenInGame", false)) flags += " bHiddenInGame";
+                        if (c.GetOrDefault<bool>("bAbsoluteLocation", false)) flags += " absLoc";
+                        Console.WriteLine($"    COMP {c.Name} : {c.ExportType}  loc={Vec(c,"RelativeLocation")} scale={Vec(c,"RelativeScale3D")}  mesh={(string.IsNullOrEmpty(mesh)?"-":mesh)}{omStr}{flags}");
+                    }
+                }
                 return 0;
             }
 

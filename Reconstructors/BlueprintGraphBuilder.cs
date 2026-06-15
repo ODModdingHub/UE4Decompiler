@@ -942,7 +942,7 @@ public static class BlueprintGraphBuilder
         // Place actors from any /Script/ module. Game-native actor classes (/Script/Pavlov.*) get a stub, and we
         // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
         // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
-        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
+        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, bool actorHidden, bool compVisible, bool compHiddenInGame, bool editorOnly, bool absLoc, bool absRot, bool absScale, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
         foreach (var e in srcExports)
         {
             // Top-level actor = export whose Outer is the PersistentLevel.
@@ -1016,6 +1016,31 @@ public static class BlueprintGraphBuilder
                 var loc = ReadVec(rootComp, "RelativeLocation", 0);
                 var rot = ReadVec(rootComp, "RelativeRotation", 0);
                 var scl = ReadVec(rootComp, "RelativeScale3D", 1);
+                // Visibility / enabled state — a source actor disabled/hidden in the cooked world must not come back
+                // fully visible. AActor.bHidden (not rendered in game) + bIsEditorOnlyActor; the rendering component's
+                // bVisible (editor "eye" + render) and bHiddenInGame. Read the mesh-bearing component (== root when no
+                // separate mesh) since that's what actually draws.
+                bool actorHidden = false, compVisible = true, compHiddenInGame = false, editorOnly = false;
+                try
+                {
+                    actorHidden = e.GetOrDefault<bool>("bHidden", false);
+                    editorOnly  = e.GetOrDefault<bool>("bIsEditorOnlyActor", false);
+                    compVisible = meshComp.GetOrDefault<bool>("bVisible", true);
+                    compHiddenInGame = meshComp.GetOrDefault<bool>("bHiddenInGame", false);
+                }
+                catch { }
+                // Absolute (world-space) transform flags. USceneComponent always serializes the value under the
+                // "Relative*" names, but when bAbsolute* is set the value is interpreted as WORLD, not relative-to-parent.
+                // We read off the SAME component whose transform we emit (rootComp) and pass the flags through so a
+                // world-anchored actor isn't silently re-parented into relative space.
+                bool absLoc = false, absRot = false, absScale = false;
+                try
+                {
+                    absLoc   = rootComp.GetOrDefault<bool>("bAbsoluteLocation", false);
+                    absRot   = rootComp.GetOrDefault<bool>("bAbsoluteRotation", false);
+                    absScale = rootComp.GetOrDefault<bool>("bAbsoluteScale", false);
+                }
+                catch { }
                 string? meshPkg = null, meshName = null;
                 // Resolve the StaticMesh objref from the mesh-bearing component (works for Zen + legacy). For BP actors
                 // this is a child StaticMeshComponent; for a plain StaticMeshActor it's the root.
@@ -1048,7 +1073,7 @@ public static class BlueprintGraphBuilder
                 catch { }
                 while (overrideMats.Count > 0 && overrideMats[^1].pkg == null) overrideMats.RemoveAt(overrideMats.Count - 1); // trim trailing default slots
                 if (overrideMats.All(m => m.pkg == null)) overrideMats.Clear();
-                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, rootComp));
+                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, actorHidden, compVisible, compHiddenInGame, editorOnly, absLoc, absRot, absScale, rootComp));
             }
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
@@ -1221,10 +1246,19 @@ public static class BlueprintGraphBuilder
                 var t = new TaggedPropertyWriter(w, spw.Name);
                 if (meshObjImp != 0 && a.compClass == "StaticMeshComponent") t.Object("StaticMesh", meshObjImp);
                 if (overrideMatImps.Length > 0) t.ObjectArray("OverrideMaterials", overrideMatImps);
+                // Preserve the cooked component's visibility (default bVisible=true / bHiddenInGame=false, so only
+                // write when they differ — an actor hidden/disabled in-game must stay hidden here).
+                if (!a.compVisible) t.Bool("bVisible", false);
+                if (a.compHiddenInGame) t.Bool("bHiddenInGame", true);
                 WriteLightComponentProperties(t, a.sourceComp, a.compClass);
                 // Mark Movable so the editor never bakes static lighting for these synthesized components —
                 // Lightmass derefs null on placed lights/meshes that lack full bake data (Build Lighting crash).
                 t.ByteEnum("Mobility", "EComponentMobility::Type", "EComponentMobility::Movable");
+                // Preserve world-space anchoring: when the cooked component marked a channel absolute, the value below
+                // is a WORLD transform and must be flagged so the editor doesn't re-interpret it as relative-to-parent.
+                if (a.absLoc) t.Bool("bAbsoluteLocation", true);
+                if (a.absRot) t.Bool("bAbsoluteRotation", true);
+                if (a.absScale) t.Bool("bAbsoluteScale", true);
                 t.Struct("RelativeLocation", "Vector", () => { w.Write(a.loc[0]); w.Write(a.loc[1]); w.Write(a.loc[2]); });
                 if (a.rot[0] != 0 || a.rot[1] != 0 || a.rot[2] != 0) t.Struct("RelativeRotation", "Rotator", () => { w.Write(a.rot[0]); w.Write(a.rot[1]); w.Write(a.rot[2]); });
                 if (a.scale[0] != 1 || a.scale[1] != 1 || a.scale[2] != 1) t.Struct("RelativeScale3D", "Vector", () => { w.Write(a.scale[0]); w.Write(a.scale[1]); w.Write(a.scale[2]); });
@@ -1254,6 +1288,9 @@ public static class BlueprintGraphBuilder
                 var t = new TaggedPropertyWriter(w, spw.Name);
                 t.Object("RootComponent", compPkg);
                 t.Str("ActorLabel", a.label);
+                // Actor-level disabled/hidden state from the cooked world (defaults false -> only write when set).
+                if (a.actorHidden) t.Bool("bHidden", true);
+                if (a.editorOnly) t.Bool("bIsEditorOnlyActor", true);
                 if (isBpActor)
                 {
                     // Every placed actor needs an ActorGuid; a BP-class instance also needs BlueprintCreatedComponents

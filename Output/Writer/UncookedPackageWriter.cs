@@ -272,7 +272,7 @@ public sealed class UncookedPackageWriter
         using var w = new FArchiveWriter(ms);
         foreach (var n in names)
         {
-            var s = n.Name ?? "None";
+            var s = PackagePathCanon.Normalize(n.Name ?? "None");
             w.WriteFString(s);
             w.Write(FCrc.NonCasePreservingHash(s));
             w.Write(FCrc.CasePreservingHash(s));
