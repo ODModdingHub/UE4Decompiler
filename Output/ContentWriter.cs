@@ -520,6 +520,33 @@ public sealed class ContentWriter
     /// <summary>Write a synth unlit material that samples the material's first /Game texture (resolved from the
     /// cooked import table — works for both UMaterial and MaterialInstanceConstant). Returns false if no texture
     /// reference is found (caller falls back).</summary>
+    /// <summary>Pick the most base-color-like VectorParameterValue across the material's exports and return it as BGRA.
+    /// Returns score &lt; 0 when only non-base colors (emissive/spec/etc.) exist — caller treats that as "no tint".</summary>
+    private static (uint bgra, int score) ResolveDominantColor(ParsedAsset asset)
+    {
+        uint baseColor = 0xFF808080u; int bestCol = -1;
+        foreach (var exp in asset.Exports)
+        {
+            var vpvs = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("VectorParameterValues");
+            if (vpvs == null) continue;
+            foreach (var s in vpvs)
+            {
+                var nm = (s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")
+                            ?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "").ToLowerInvariant();
+                int sc = 0;
+                if (nm.Contains("emiss") || nm.Contains("spec") || nm.Contains("subsurf") || nm.Contains("fresnel")) sc = -2;
+                if (nm.Contains("multiply") || nm.Contains("mult")) sc -= 1;   // "Color Multiply" is a grey tint, prefer ColorA/ColorB
+                if (nm == "color" || nm.Contains("basecolor") || nm.Contains("base color") || nm.Contains("albedo") ||
+                    nm.Contains("tint") || nm.Contains("diffuse") || nm.Contains("color")) sc += 3;
+                if (sc <= bestCol) continue;
+                var fc = s.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FLinearColor>("ParameterValue").ToFColor(true);
+                bestCol = sc;
+                baseColor = ((uint)fc.A << 24) | ((uint)fc.R << 16) | ((uint)fc.G << 8) | fc.B;
+            }
+        }
+        return (baseColor, bestCol);
+    }
+
     private bool TryWriteMaterialAsset(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
     {
         var shortName = Path.GetFileNameWithoutExtension(outputAsset);
@@ -594,35 +621,24 @@ public sealed class ContentWriter
                     else if (nm == "tiling" || nm == "uvscale" || nm == "uv scale" || nm.Contains("texturescale")) { uTiling = val; vTiling = val; }
                 }
             }
-            if (texPkg != null && texName != null
-                && Writer.MaterialWriter.WriteEditorMaterial(outputAsset, shortName, packageName, texPkg, texName, uTiling, vTiling))
+            if (texPkg != null && texName != null)
             {
-                entry.Note = string.IsNullOrEmpty(entry.Note) ? $"synth unlit material -> {texName}"
-                                                              : entry.Note + $"; synth unlit material -> {texName}";
-                return true;
-            }
-            // No base-color texture: recover the material's base color from a VectorParameterValue (prototype/solid
-            // materials like MM_BasicColor store color as a "Color" param, not a texture). Pick the most base-color-like
-            // and bake it as the flat material's constant BaseColor (vs a meaningless grey).
-            uint baseColor = 0xFF808080u; int bestCol = -1;
-            foreach (var exp in asset.Exports)
-            {
-                var vpvs = exp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("VectorParameterValues");
-                if (vpvs == null) continue;
-                foreach (var s in vpvs)
+                // Tint the base texture by the recovered dominant Vector color (team/accent color) so textured surfaces
+                // get their real color back (e.g. MI_TeamArena_Crowns: arena pattern × Crowns blue) instead of grey.
+                var (tintBgra, tintScore) = ResolveDominantColor(asset);
+                bool ok = tintScore >= 0
+                    ? Writer.MaterialWriter.WriteEditorMaterialTinted(outputAsset, shortName, packageName, texPkg, texName, uTiling, vTiling, tintBgra)
+                    : Writer.MaterialWriter.WriteEditorMaterial(outputAsset, shortName, packageName, texPkg, texName, uTiling, vTiling);
+                if (ok)
                 {
-                    var nm = (s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")
-                                ?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "").ToLowerInvariant();
-                    int sc = 0;
-                    if (nm.Contains("emiss") || nm.Contains("spec") || nm.Contains("subsurf") || nm.Contains("fresnel")) sc = -2;
-                    if (nm == "color" || nm.Contains("basecolor") || nm.Contains("base color") || nm.Contains("albedo") ||
-                        nm.Contains("tint") || nm.Contains("diffuse")) sc += 3;
-                    if (sc <= bestCol) continue;
-                    var fc = s.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FLinearColor>("ParameterValue").ToFColor(true);
-                    bestCol = sc;
-                    baseColor = ((uint)fc.A << 24) | ((uint)fc.R << 16) | ((uint)fc.G << 8) | fc.B;
+                    var note = tintScore >= 0 ? $"synth material -> {texName} × tint" : $"synth material -> {texName}";
+                    entry.Note = string.IsNullOrEmpty(entry.Note) ? note : entry.Note + "; " + note;
+                    return true;
                 }
             }
+            // No base-color texture: recover the material's base color from a VectorParameterValue (prototype/solid
+            // materials like MM_BasicColor store color as a "Color" param). Bake it as the constant BaseColor.
+            var (baseColor, bestCol) = ResolveDominantColor(asset);
             if (bestCol < 0) baseColor = 0xFF808080u;   // only emissive/spec colors -> keep neutral grey
 
             // Recover emissive: only if a "Use Emissive"-style static switch is enabled, then take the

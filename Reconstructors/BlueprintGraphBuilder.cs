@@ -942,7 +942,7 @@ public static class BlueprintGraphBuilder
         // Place actors from any /Script/ module. Game-native actor classes (/Script/Pavlov.*) get a stub, and we
         // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
         // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
-        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, bool actorHidden, bool compVisible, bool compHiddenInGame, bool editorOnly, bool absLoc, bool absRot, bool absScale, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
+        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, bool actorHidden, bool compVisible, bool compHiddenInGame, bool editorOnly, bool absLoc, bool absRot, bool absScale, string? textValue, float worldSize, CUE4Parse.UE4.Objects.Core.Misc.FGuid mapBuildId, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
         foreach (var e in srcExports)
         {
             // Top-level actor = export whose Outer is the PersistentLevel.
@@ -1008,6 +1008,14 @@ public static class BlueprintGraphBuilder
                 actorCls = bpName;
                 if (compPkg != "/Script/Engine") { compPkg = "/Script/Engine"; compCls = "SceneComponent"; }
             }
+            else if (actorCls.EndsWith("TextRenderActor", StringComparison.Ordinal) || compCls.Contains("TextRenderComponent", StringComparison.Ordinal))
+            {
+                // Game text actors (AxTextRenderActor) subclass the engine ATextRenderActor (root = UTextRenderComponent
+                // named "NewTextRenderComponent"). Substitute to the engine TextRenderActor and re-emit the Text +
+                // WorldSize so the floating text renders, instead of a stray cube/empty StaticMeshActor.
+                actorPkg = "/Script/Engine"; actorCls = "TextRenderActor";
+                compPkg = "/Script/Engine"; compCls = "TextRenderComponent";
+            }
             else if (actorPkg != "/Script/Engine") { actorPkg = "/Script/Engine"; actorCls = "StaticMeshActor"; compPkg = "/Script/Engine"; compCls = "StaticMeshComponent"; }
             else if (compPkg != "/Script/Engine") { compPkg = "/Script/Engine"; compCls = "SceneComponent"; }
             try
@@ -1041,7 +1049,32 @@ public static class BlueprintGraphBuilder
                     absScale = rootComp.GetOrDefault<bool>("bAbsoluteScale", false);
                 }
                 catch { }
+                // Built-lighting key: the mesh component's LODData[0].MapBuildDataId is what the UMapBuildDataRegistry
+                // is keyed by. Carry it onto the synthesized component so the recovered lightmaps actually bind.
+                CUE4Parse.UE4.Objects.Core.Misc.FGuid mapBuildId = default;
+                try
+                {
+                    if (meshComp is CUE4Parse.UE4.Assets.Exports.Component.StaticMesh.UStaticMeshComponent usmc
+                        && usmc.LODData is { Length: > 0 })
+                        mapBuildId = usmc.LODData[0].MapBuildDataId;
+                }
+                catch { }
                 string? meshPkg = null, meshName = null;
+                string? textValue = null; float worldSize = 100f;
+                bool isTextRender = actorCls == "TextRenderActor";
+                if (isTextRender)
+                {
+                    // Text actor: capture the displayed string + size off the (Ax)TextRenderComponent; no mesh.
+                    try
+                    {
+                        textValue = meshComp.GetOrDefault<CUE4Parse.UE4.Objects.Core.i18N.FText>("Text")?.Text;
+                        worldSize = meshComp.GetOrDefault<float>("WorldSize", 100f);
+                    }
+                    catch { }
+                    compPkg = "/Script/Engine"; compCls = "TextRenderComponent";
+                }
+                else
+                {
                 // Resolve the StaticMesh objref from the mesh-bearing component (works for Zen + legacy). For BP actors
                 // this is a child StaticMeshComponent; for a plain StaticMeshActor it's the root.
                 var mi = meshComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("StaticMesh")?.ResolvedObject;
@@ -1049,6 +1082,7 @@ public static class BlueprintGraphBuilder
                 if (IsHlodOrStandinPath(meshPkg)) continue;
                 compPkg = "/Script/Engine";
                 compCls = NormalizeSynthComponentClass(compCls, meshName != null);
+                }
                 // AStaticMeshActor's root is ALWAYS a UStaticMeshComponent (a native root subobject). If the actor has
                 // no resolvable mesh, NormalizeSynthComponentClass downgrades the component to SceneComponent — but then
                 // the editor deserializes AStaticMeshActor's StaticMeshComponent over our SceneComponent export, reads a
@@ -1073,7 +1107,7 @@ public static class BlueprintGraphBuilder
                 catch { }
                 while (overrideMats.Count > 0 && overrideMats[^1].pkg == null) overrideMats.RemoveAt(overrideMats.Count - 1); // trim trailing default slots
                 if (overrideMats.All(m => m.pkg == null)) overrideMats.Clear();
-                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, actorHidden, compVisible, compHiddenInGame, editorOnly, absLoc, absRot, absScale, rootComp));
+                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, actorHidden, compVisible, compHiddenInGame, editorOnly, absLoc, absRot, absScale, textValue, worldSize, mapBuildId, rootComp));
             }
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
@@ -1183,12 +1217,41 @@ public static class BlueprintGraphBuilder
         foreach (var imp in tpkg.ImportMap)
             spw.AddImportRaw(imp.ClassPackage.Index, imp.ClassPackage.Number, imp.ClassName.Index, imp.ClassName.Number,
                 imp.OuterIndex?.Index ?? 0, imp.ObjectName.Index, imp.ObjectName.Number);
+
+        // Built-lighting: reference the cooked map's UMapBuildDataRegistry from the reskinned ULevel.MapBuildData so the
+        // recovered lightmaps bind to our placed components (the _BuiltData package itself is emitted verbatim by the
+        // main dump). Read the authoritative ref off the SOURCE map's ULevel; skip maps with no built data.
+        int mapBuildDataImp = 0;
+        try
+        {
+            var srcLevelExp = srcExports.FirstOrDefault(e => e.ExportType == "Level");
+            var mbd = srcLevelExp?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("MapBuildData")?.ResolvedObject;
+            if (mbd != null)
+            {
+                var regPkg = PackagePathOfResolved(mbd);
+                var regName = mbd.Name.Text;
+                if (!string.IsNullOrEmpty(regPkg) && !string.IsNullOrEmpty(regName))
+                {
+                    var pkgI = spw.AddImport("/Script/CoreUObject", "Package", 0, regPkg);
+                    mapBuildDataImp = spw.AddImport("/Script/Engine", "MapBuildDataRegistry", pkgI, regName);
+                    Log.Information("ULevel.MapBuildData -> {P}.{N}", regPkg, regName);
+                }
+            }
+        }
+        catch { }
+
         for (int i = 0; i < tpkg.ExportMap.Length; i++)
         {
             var e = tpkg.ExportMap[i];
             var payload = new byte[(int)e.SerialSize];
             Array.Copy(data, (int)e.SerialOffset, payload, 0, payload.Length);
-            if (i == lvlExport) payload = PatchLevelActors(payload, lvlPostNone, newActorPkgs);
+            if (i == lvlExport)
+            {
+                payload = PatchLevelActors(payload, lvlPostNone, newActorPkgs);
+                // Inject MapBuildData BEFORE the level's None (PatchLevelActors only appended in the native region
+                // after None, so lvlPostNone still marks the original tagged-prop terminator).
+                if (mapBuildDataImp != 0) payload = PatchLevelMapBuildData(payload, lvlPostNone, mapBuildDataImp, spw);
+            }
             else if (i == worldExport && newStreamingPkgs.Count > 0) payload = PatchWorldStreamingLevels(payload, noneIdx, newStreamingPkgs);
             spw.AddExportRaw(e.ObjectName.Index, e.ObjectName.Number, e.ClassIndex?.Index ?? 0, e.SuperIndex?.Index ?? 0,
                 e.TemplateIndex?.Index ?? 0, e.OuterIndex?.Index ?? 0, payload, (uint)e.ObjectFlags, e.IsAsset);
@@ -1246,6 +1309,13 @@ public static class BlueprintGraphBuilder
                 var t = new TaggedPropertyWriter(w, spw.Name);
                 if (meshObjImp != 0 && a.compClass == "StaticMeshComponent") t.Object("StaticMesh", meshObjImp);
                 if (overrideMatImps.Length > 0) t.ObjectArray("OverrideMaterials", overrideMatImps);
+                // TextRenderActor: emit the displayed string (Base-history FText — version-stable in our 4.21 maps,
+                // unlike the None+culture-invariant form which is editor-version gated) + WorldSize.
+                if (a.compClass == "TextRenderComponent")
+                {
+                    t.Text("Text", "", "", a.textValue ?? "");
+                    t.Float("WorldSize", a.worldSize);
+                }
                 // Preserve the cooked component's visibility (default bVisible=true / bHiddenInGame=false, so only
                 // write when they differ — an actor hidden/disabled in-game must stay hidden here).
                 if (!a.compVisible) t.Bool("bVisible", false);
@@ -1279,7 +1349,23 @@ public static class BlueprintGraphBuilder
                 // FRenderingObjectVersion < MapBuildDataSeparatePackage; our package's Dev-Rendering custom version is
                 // newer, so the editor/CUE4Parse do NOT read it — writing it desyncs the component (CUE4Parse: "Could
                 // not read PointLightComponent correctly"). The original (no shadow map) tail is correct.
-                if (a.compClass == "StaticMeshComponent") w.Write(0);   // UStaticMeshComponent: LODData count = 0
+                if (a.compClass == "StaticMeshComponent")
+                {
+                    // UStaticMeshComponent: LODData array. Emit ONE FStaticMeshComponentLODInfo carrying the cooked
+                    // MapBuildDataId so the recovered UMapBuildDataRegistry binds this component's lightmap. With our
+                    // Dev-Rendering custom version (>= MapBuildDataSeparatePackage) the LODInfo is the separate-package
+                    // form: FStripDataFlags(2) + FGuid(16) + bLoadVertexColorData(1=0) + PaintedVertices int32(0).
+                    // GlobalStripFlags=0 => editor reads PaintedVertices (IsEditorDataStripped=false, build !IsFilterEditorOnly).
+                    if (!a.mapBuildId.Equals(default(CUE4Parse.UE4.Objects.Core.Misc.FGuid)))
+                    {
+                        w.Write(1);                                     // LODData count = 1
+                        w.Write((byte)0); w.Write((byte)0);             // FStripDataFlags{Global,Class}=0
+                        w.Write(a.mapBuildId.A); w.Write(a.mapBuildId.B); w.Write(a.mapBuildId.C); w.Write(a.mapBuildId.D); // FGuid
+                        w.Write((byte)0);                               // bLoadVertexColorData = 0
+                        w.Write(0);                                     // PaintedVertices count = 0
+                    }
+                    else w.Write(0);                                    // LODData count = 0
+                }
                 w.Flush();
                 spw.AddExportRaw(spw.Name(a.compName), 0, ClassImp(a.compPkg, a.compClass), 0, 0, actorPkg, ms.ToArray(), isBpActor ? 0u : 0x1u, false);
             }
@@ -1535,6 +1621,27 @@ public static class BlueprintGraphBuilder
         Array.Copy(p, insertAt, outp, insertAt + add.Length, p.Length - insertAt);
         BitConverter.GetBytes(count + newActors.Count).CopyTo(outp, countOff);
         Log.Information("Patched ULevel.Actors: {A} -> {B}", count, count + newActors.Count);
+        return outp;
+    }
+
+    /// <summary>Splice a MapBuildData ObjectProperty (pointing at the recovered UMapBuildDataRegistry import) into the
+    /// ULevel's tagged-property stream, immediately before its terminating None tag. <paramref name="postNone"/> is the
+    /// offset just past that None (so the None FName occupies [postNone-8, postNone)).</summary>
+    private static byte[] PatchLevelMapBuildData(byte[] p, int postNone, int regImp, SynthPackageWriter spw)
+    {
+        int noneStart = postNone - 8;                                     // None FName = (int32 index, int32 number)
+        if (noneStart < 0 || noneStart > p.Length) { Log.Warning("Level None offset OOB; skipping MapBuildData wire"); return p; }
+        byte[] prop;
+        using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
+            var t = new TaggedPropertyWriter(w, spw.Name);
+            t.Object("MapBuildData", regImp);
+            w.Flush(); prop = ms.ToArray();
+        }
+        var outp = new byte[p.Length + prop.Length];
+        Array.Copy(p, 0, outp, 0, noneStart);
+        prop.CopyTo(outp, noneStart);
+        Array.Copy(p, noneStart, outp, noneStart + prop.Length, p.Length - noneStart);
+        Log.Information("Wired ULevel.MapBuildData (import {I})", regImp);
         return outp;
     }
 

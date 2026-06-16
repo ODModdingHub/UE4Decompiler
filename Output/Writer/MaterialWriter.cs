@@ -74,6 +74,54 @@ public static class MaterialWriter
         return true;
     }
 
+    /// <summary>Texture base-color × recovered tint color (the MIC's dominant Vector param), fully-rough lit. Recovers
+    /// the team/accent colors that a plain TextureSample drops (e.g. MI_TeamArena_* tinting the arena pattern blue/gold).
+    /// Graph: TextureSample [× TextureCoordinate] -> Multiply.A ; Constant3Vector(tint) -> Multiply.B ; Multiply -> BaseColor.</summary>
+    public static bool WriteEditorMaterialTinted(string outFile, string targetShort, string targetPackagePath,
+        string texturePackagePath, string textureName, float uTiling, float vTiling, uint tintBgra)
+    {
+        var spw = new SynthPackageWriter(EGame.GAME_UE4_21, targetPackagePath);
+        int enginePkg = spw.AddImport("/Script/CoreUObject", "Package", 0, "/Script/Engine");
+        int matClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "Material");
+        int editorDataClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MaterialEditorOnlyData");
+        int sampleClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MaterialExpressionTextureSample");
+        int const3Class = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MaterialExpressionConstant3Vector");
+        int mulClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MaterialExpressionMultiply");
+        int texPkg = spw.AddImport("/Script/CoreUObject", "Package", 0, texturePackagePath);
+        int texImp = spw.AddImport("/Script/Engine", "Texture2D", texPkg, textureName);
+
+        const int matExport = 1;
+        const int editorDataExport = 2;
+        const int sampleExport = 3;
+        bool tile = MathF.Abs(uTiling - 1f) > 0.001f || MathF.Abs(vTiling - 1f) > 0.001f;
+        int coordExport = tile ? 4 : 0;
+        int coordClass = tile ? spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MaterialExpressionTextureCoordinate") : 0;
+        int const3Export = tile ? 5 : 4;
+        int mulExport = tile ? 6 : 5;
+
+        var exprs = new List<int> { sampleExport };
+        if (tile) exprs.Add(coordExport);
+        exprs.Add(const3Export);
+        exprs.Add(mulExport);
+
+        var matPayload = BuildMaterialShell(spw, editorDataExport);
+        var editorPayload = BuildEditorOnlyDataExprs(spw, baseColorExpr: mulExport, allExprs: exprs);
+        var samplePayload = BuildTextureSample(spw, matExport, texImp, coordExport);
+        var const3Payload = BuildConstant3Vector(spw, matExport, tintBgra);
+        var mulPayload = BuildMultiply(spw, matExport, sampleExport, const3Export);
+
+        spw.AddExport(targetShort, matClass, 0, 0, matPayload, objectFlags: 0x1 | 0x2 | 0x8, templatePkgIndex: 0, isAsset: true);
+        spw.AddExport("MaterialEditorOnlyData", editorDataClass, 0, matExport, editorPayload, objectFlags: 0x1 | 0x8, templatePkgIndex: 0, isAsset: false);
+        spw.AddExport(targetShort + "_Sample", sampleClass, 0, matExport, samplePayload, objectFlags: 0x8, templatePkgIndex: 0, isAsset: false);
+        if (tile)
+            spw.AddExport(targetShort + "_TexCoord", coordClass, 0, matExport, BuildTextureCoordinate(spw, matExport, uTiling, vTiling), objectFlags: 0x8, templatePkgIndex: 0, isAsset: false);
+        spw.AddExport(targetShort + "_Tint", const3Class, 0, matExport, const3Payload, objectFlags: 0x8, templatePkgIndex: 0, isAsset: false);
+        spw.AddExport(targetShort + "_Mul", mulClass, 0, matExport, mulPayload, objectFlags: 0x8, templatePkgIndex: 0, isAsset: false);
+        spw.Write(outFile);
+        Log.Information("Tinted editor material {N} -> {Out} (tex {T} x #{C:X8}, tiling {U}x{V})", targetShort, outFile, textureName, tintBgra, uTiling, vTiling);
+        return true;
+    }
+
     private static bool TryCloneMaterialTemplate(string templatePath, string outFile, string targetShort, string targetPackagePath,
         string texturePackagePath, string textureName)
     {
@@ -212,6 +260,75 @@ public static class MaterialWriter
         t.WriteNone();
         w.Write(0); // UObject bSerializeGuid
         w.Write(0); // bSavedCachedExpressionData
+        w.Flush();
+        return ms.ToArray();
+    }
+
+    /// <summary>MaterialEditorOnlyData with BaseColor driven by <paramref name="baseColorExpr"/> and the full expression
+    /// list registered in ExpressionCollection (so the graph nodes survive load + the material compiles).</summary>
+    private static byte[] BuildEditorOnlyDataExprs(SynthPackageWriter spw, int baseColorExpr, IReadOnlyList<int> allExprs)
+    {
+        using var ms = new MemoryStream();
+        using var w = new FArchiveWriter(ms);
+        var t = new TaggedPropertyWriter(w, spw.Name);
+        t.Struct("BaseColor", "ColorMaterialInput", () =>
+        {
+            w.Write(baseColorExpr);                    // Expression (FPackageIndex)
+            w.Write(0);                                // OutputIndex
+            w.Write(spw.Name("None")); w.Write(0);     // InputName
+            w.Write(0);                                // Mask
+            w.Write(0); w.Write(0); w.Write(0); w.Write(0);
+            w.Write(0);                                // bUseConstant = false (driven by expression)
+            w.Write(0u);                               // Constant (unused)
+        });
+        t.Struct("ExpressionCollection", "MaterialExpressionCollection", () =>
+        {
+            if (allExprs.Count > 0) t.ObjectArray("Expressions", allExprs.ToList());
+            t.WriteNone();
+        });
+        t.WriteNone();
+        w.Write(0); // UObject bSerializeGuid
+        w.Write(0); // bSavedCachedExpressionData
+        w.Flush();
+        return ms.ToArray();
+    }
+
+    private static float SrgbToLinear(float s) => s <= 0.04045f ? s / 12.92f : MathF.Pow((s + 0.055f) / 1.055f, 2.4f);
+
+    private static byte[] BuildConstant3Vector(SynthPackageWriter spw, int matExport, uint bgra)
+    {
+        // bgra carries sRGB byte values (from FLinearColor.ToFColor(sRGB=true)); Constant3Vector.Constant is LINEAR,
+        // so convert back to linear or the tint renders washed-out/too bright.
+        float r = SrgbToLinear(((bgra >> 16) & 0xFF) / 255f), g = SrgbToLinear(((bgra >> 8) & 0xFF) / 255f), b = SrgbToLinear((bgra & 0xFF) / 255f);
+        using var ms = new MemoryStream();
+        using var w = new FArchiveWriter(ms);
+        var t = new TaggedPropertyWriter(w, spw.Name);
+        t.Struct("Constant", "LinearColor", () => { w.Write(r); w.Write(g); w.Write(b); w.Write(1f); });
+        t.Object("Material", matExport);
+        t.GuidStruct("MaterialExpressionGuid", FGuid16.NewGuid());
+        t.WriteNone();
+        w.Write(0); // UObject bSerializeGuid
+        w.Flush();
+        return ms.ToArray();
+    }
+
+    private static byte[] BuildMultiply(SynthPackageWriter spw, int matExport, int aExpr, int bExpr)
+    {
+        using var ms = new MemoryStream();
+        using var w = new FArchiveWriter(ms);
+        var t = new TaggedPropertyWriter(w, spw.Name);
+        void Input(string name, int expr) => t.Struct(name, "ExpressionInput", () =>
+        {
+            w.Write(expr); w.Write(0);
+            w.Write(spw.Name("None")); w.Write(0);
+            w.Write(0); w.Write(0); w.Write(0); w.Write(0); w.Write(0);
+        });
+        Input("A", aExpr);
+        Input("B", bExpr);
+        t.Object("Material", matExport);
+        t.GuidStruct("MaterialExpressionGuid", FGuid16.NewGuid());
+        t.WriteNone();
+        w.Write(0); // UObject bSerializeGuid
         w.Flush();
         return ms.ToArray();
     }

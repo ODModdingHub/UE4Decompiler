@@ -71,6 +71,16 @@ public sealed class SynthPackageWriter
     /// adds BulkDataStartOffset back on load). Caller embeds this offset in the export's FByteBulkData header.</summary>
     public long AddBulk(byte[] data) { var off = _bulkTotal; _bulk.Add(data); _bulkTotal += data.Length; return off; }
 
+    // FEditorBulkData.OffsetInFile is an ABSOLUTE file offset, unknown until the bulk region is placed. The caller
+    // (texture writer) reserves an int64 in its export payload and registers a fixup: at Write() time we compute the
+    // absolute offset (bulkStart + bulkRelOffset) and patch it into the export payload bytes.
+    private readonly List<(int expIndex, int payloadPos, long bulkRelOffset)> _absOffsetFixups = new();
+    /// <summary>Register a backpatch of an absolute file offset into an export payload. <paramref name="exportIndex"/>
+    /// is the 1-based value returned by AddExport/AddExportRaw; <paramref name="payloadPos"/> is the byte position of
+    /// the int64 within that export's payload; <paramref name="bulkRelOffset"/> is the AddBulk return value.</summary>
+    public void AddAbsoluteOffsetFixup(int exportIndex, int payloadPos, long bulkRelOffset)
+        => _absOffsetFixups.Add((exportIndex - 1, payloadPos, bulkRelOffset));
+
     /// <summary>Pre-add a base name at a specific position (cooked NameMap order). Returns its index.</summary>
     public int AddRawName(string s) => Name(s);
 
@@ -151,6 +161,10 @@ public sealed class SynthPackageWriter
         for (var i = 0; i < _exports.Count; i++) { offsets[i] = cursor; cursor += _exports[i].Payload.Length; totalPayload += _exports[i].Payload.Length; }
         var bulkStart = headerSize + totalPayload;
 
+        // Backpatch absolute file offsets (FEditorBulkData.OffsetInFile) into export payloads now that bulkStart is known.
+        foreach (var (expIdx, pos, relOff) in _absOffsetFixups)
+            BitConverter.GetBytes((long)(bulkStart + relOff)).CopyTo(_exports[expIdx].Payload, pos);
+
         var exportsBuf = SerializeExports(offsets);
         var summaryBuf = SerializeSummary(headerSize, nameOffset, importOffset, exportOffset, dependsOffset, arOffset, bulkStart);
         if (summaryBuf.Length != summarySize) throw new InvalidOperationException($"summary drift {summaryBuf.Length}!={summarySize}");
@@ -185,7 +199,7 @@ public sealed class SynthPackageWriter
                 var pkgN = imp.PackageName != 0 || imp.PackageNameN != 0 ? imp.PackageNameN : imp.ObjNameN;
                 w.Write(pkgIdx); w.Write(pkgN);
             }
-            if (ver >= EUnrealEngineObjectUE5Version.OPTIONAL_RESOURCES) w.WriteByteBool(imp.ImportOptional);
+            if (ver >= EUnrealEngineObjectUE5Version.OPTIONAL_RESOURCES) w.WriteBool(imp.ImportOptional);  // FObjectImport.ImportOptional is ReadBoolean()=int32, not a byte
         }
         w.Flush(); return ms.ToArray();
     }
@@ -349,6 +363,13 @@ public sealed class SynthPackageWriter
         w.Write(0);                                              // ThumbnailTableOffset
         if (ver >= EUnrealEngineObjectUE5Version.IMPORT_TYPE_HIERARCHIES) { w.Write(0); w.Write(0); }
         if (ver < EUnrealEngineObjectUE5Version.PACKAGE_SAVED_HASH) w.WriteGuid(MakeGuid());
+        // PersistentGuid (UE4.26+/UE5): the summary reader consumes an FGuid here for non-editor-only packages.
+        // Gated >= ADDED_PACKAGE_OWNER so 4.21 output is unchanged; without it a UE5 summary desyncs at EngineVersion.
+        if (ver >= EUnrealEngineObjectUE4Version.ADDED_PACKAGE_OWNER && (PackageFlags & (uint)CUE4Parse.UE4.Objects.UObject.EPackageFlags.PKG_FilterEditorOnly) == 0)
+        {
+            w.WriteGuid(MakeGuid());
+            if (ver < EUnrealEngineObjectUE4Version.NON_OUTER_PACKAGE_IMPORT) w.WriteGuid(MakeGuid());   // ownerPersistentGuid (removed after 4.26)
+        }
         w.Write(1);                                              // Generations count
         w.Write(_exports.Count); w.Write(_names.Count);
         if (ver >= EUnrealEngineObjectUE4Version.ENGINE_VERSION_OBJECT)

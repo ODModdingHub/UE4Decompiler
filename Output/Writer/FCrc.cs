@@ -90,4 +90,15 @@ public static class FCrc
     public static ushort NonCasePreservingHash(string name) =>
         (ushort)(Strihash_DEPRECATED(name, IsStoredWide(name)) & 0xFFFF);
     public static ushort CasePreservingHash(string name) => (ushort)(StrCrc32(name) & 0xFFFF);
+
+    /// <summary>UE <c>FCrc::MemCrc32</c> — forward CRC32 (poly 0x04C11DB7, non-reflected table), init/xorout ~0.
+    /// Used for the FCompressedBuffer header integrity field. Operates on the bytes exactly as given (caller passes
+    /// the host/little-endian field layout the engine CRCs over).</summary>
+    public static uint MemCrc32(ReadOnlySpan<byte> data, uint crc = 0)
+    {
+        crc = ~crc;
+        foreach (var b in data)
+            crc = (crc << 8) ^ CRCTableDeprecated[((crc >> 24) ^ b) & 0xFF];
+        return ~crc;
+    }
 }

@@ -86,6 +86,18 @@ public static class Program
         [Option("dump-actor-tree", HelpText = "Dev: load one .umap (by vpath substring) and print each PersistentLevel actor with its child components, their class/mesh/transform/material+visibility overrides.")]
         public string? DumpActorTree { get; set; }
 
+        [Option("dump-built-data", HelpText = "Dev: load one .umap + its _BuiltData registry; report MeshBuildData entries (GUID -> lightmap textures) and how many of the map's static-mesh components have a MapBuildDataId that matches a registry key.")]
+        public string? DumpBuiltData { get; set; }
+
+        [Option("test-builtdata", HelpText = "Dev: round-trip the MapBuildDataRegistry serializer — load a _BuiltData by vpath substr, re-serialize its registry into a UE5 package, re-read via CUE4Parse, and compare MeshBuildData.")]
+        public string? TestBuiltData { get; set; }
+
+        [Option("probe-tex-bulk", HelpText = "Dev: load a LOCAL editor texture/_BuiltData .uasset (--version) and print the first LightMap/Texture2D's FEditorBulkData (Flags/PayloadSize/Offset + FCompressedBuffer header) and package-trailer presence.")]
+        public string? ProbeTexBulk { get; set; }
+
+        [Option("dump-shader", HelpText = "Dev: load a material by vpath substr WITH shader maps and dump the FUniformExpressionSet (scalar/vector/texture params + preshaders) + shader platform/code info — to see what the compiled material exposes.")]
+        public string? DumpShader { get; set; }
+
         [Option("find-id-collisions", HelpText = "Dev: scan a Content dir, compute FPackageId per .uasset, and report paths that share an id (the FPackageId-collision crash). No pak mount.")]
         public string? FindIdCollisions { get; set; }
 
@@ -310,6 +322,28 @@ public bool GenMeshAll { get; set; }
             return 0;
         }
 
+        if (!string.IsNullOrWhiteSpace(o.ProbeTexBulk))
+        {
+            var bytes = File.ReadAllBytes(o.ProbeTexBulk);
+            var game = VersionDetector.FromHint(o.Version) ?? EGame.GAME_UE5_1;
+            var pkg = new CUE4Parse.UE4.Assets.Package(
+                new CUE4Parse.UE4.Readers.FByteArchive("probe", bytes, new CUE4Parse.UE4.Versions.VersionContainer(game)),
+                (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null,
+                (CUE4Parse.FileProvider.IFileProvider?)null, false);
+            Console.WriteLine($"Trailer present: {pkg.Trailer != null};  DataResourceMap: {(pkg.DataResourceMap?.Length.ToString() ?? "null")}");
+            int shown = 0;
+            for (var i = 0; i < pkg.ExportsLazy.Length && shown < 4; i++)
+            {
+                CUE4Parse.UE4.Assets.Exports.Texture.UTexture? tex = null;
+                try { tex = pkg.ExportsLazy[i].Value as CUE4Parse.UE4.Assets.Exports.Texture.UTexture; } catch (Exception ex) { Console.WriteLine($"  exp[{i}] parse err: {ex.Message}"); continue; }
+                if (tex?.EditorData is not { } eb) continue;
+                shown++;
+                Console.WriteLine($"  {tex.Name} ({tex.ExportType}): EditorData Flags={eb.Flags} PayloadSize={eb.PayloadSize} OffsetInFile={eb.OffsetInFile}");
+                Console.WriteLine($"      FCompressedBuffer: Method={eb.Payload?.Header.Method} Compressor={eb.Payload?.Header.Compressor} BlockCount={eb.Payload?.Header.BlockCount} RawSize={eb.Payload?.Header.TotalRawSize} CompSize={eb.Payload?.Header.TotalCompressedSize}");
+            }
+            return 0;
+        }
+
         if (!string.IsNullOrWhiteSpace(o.CompareMeshes))
         {
             var parts = o.CompareMeshes.Split('|', 2);
@@ -499,6 +533,43 @@ public bool GenMeshAll { get; set; }
                 return 0;
             }
 
+            if (!string.IsNullOrWhiteSpace(o.DumpShader))
+            {
+                extractor.Provider.ReadShaderMaps = true;
+                var key = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.DumpShader, StringComparison.OrdinalIgnoreCase) && k.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase));
+                if (key == null) { Log.Error("no .uasset match for '{S}'", o.DumpShader); return 1; }
+                var pkg = extractor.Provider.LoadPackage(key);
+                var mat = pkg.GetExports().OfType<CUE4Parse.UE4.Assets.Exports.Material.UMaterial>().FirstOrDefault();
+                if (mat == null) { Log.Error("no UMaterial export in {K}", key); return 1; }
+                Console.WriteLine($"Material {mat.Name}: BlendMode={mat.BlendMode} ShadingModel={mat.ShadingModel} TwoSided={mat.TwoSided}");
+                Console.WriteLine($"  ReferencedTextures ({mat.ReferencedTextures.Count}):");
+                foreach (var tex in mat.ReferencedTextures) Console.WriteLine($"    {tex?.Name}");
+                Console.WriteLine($"  LoadedMaterialResources: {mat.LoadedMaterialResources.Count}");
+                foreach (var res in mat.LoadedMaterialResources)
+                {
+                    var sm = res.LoadedShaderMap;
+                    if (sm == null) { Console.WriteLine("    (resource has no shadermap)"); continue; }
+                    Console.WriteLine($"    ShaderPlatform={sm.ShaderPlatform}  sharedCode={sm.Code == null}");
+                    if (sm.Content is CUE4Parse.UE4.Assets.Exports.Material.FMaterialShaderMapContent c)
+                    {
+                        Console.WriteLine($"      OrderedMeshShaderMaps={c.OrderedMeshShaderMaps?.Length}");
+                        var u = c.MaterialCompilationOutput?.UniformExpressionSet;
+                        if (u != null)
+                        {
+                            Console.WriteLine($"      UniformExpressionSet: scalarParams={u.UniformScalarParameters.Length} vectorParams={u.UniformVectorParameters.Length} numericParams={u.UniformNumericParameters.Length} vectorPreshaders={u.UniformVectorPreshaders.Length} scalarPreshaders={u.UniformScalarPreshaders.Length} preshaders={u.UniformPreshaders.Length} defaultValuesBytes={u.DefaultValues?.Length} preshaderBufSize={u.UniformPreshaderBufferSize}");
+                            foreach (var p in u.UniformScalarParameters) Console.WriteLine($"        scalar  '{p.ParameterName}' default={p.DefaultValue}");
+                            foreach (var p in u.UniformVectorParameters) Console.WriteLine($"        vector  '{p.ParameterName}' default={p.DefaultValue}");
+                            if (u.UniformTextureParameters != null)
+                                foreach (var arr in u.UniformTextureParameters)
+                                    foreach (var tp in arr) Console.WriteLine($"        texture '{tp.ParameterName}'");
+                        }
+                        else Console.WriteLine("      (no UniformExpressionSet)");
+                    }
+                }
+                return 0;
+            }
+
             if (o.FindHiddenActors)
             {
                 var keys = extractor.EnumeratePackages(o.Filter)
@@ -585,6 +656,113 @@ public bool GenMeshAll { get; set; }
                         Console.WriteLine($"    COMP {c.Name} : {c.ExportType}  loc={Vec(c,"RelativeLocation")} scale={Vec(c,"RelativeScale3D")}  mesh={(string.IsNullOrEmpty(mesh)?"-":mesh)}{omStr}{flags}");
                     }
                 }
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.TestBuiltData))
+            {
+                var bdKey = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.TestBuiltData, StringComparison.OrdinalIgnoreCase) && k.Contains("_BuiltData", StringComparison.OrdinalIgnoreCase) && k.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase));
+                if (bdKey == null) { Log.Error("no _BuiltData match for '{S}'", o.TestBuiltData); return 1; }
+                var srcReg = extractor.Provider.LoadPackage(bdKey).GetExports()
+                    .OfType<CUE4Parse.UE4.Assets.Exports.BuildData.UMapBuildDataRegistry>().FirstOrDefault();
+                if (srcReg == null) { Log.Error("no MapBuildDataRegistry export in {K}", bdKey); return 1; }
+                int srcCount = srcReg.MeshBuildData?.Count ?? 0;
+                Log.Information("Source registry {K}: {N} MeshBuildData entries", bdKey, srcCount);
+
+                var (rov, refl, fort) = Output.Writer.BuiltDataWriter.GatesForGame(mountGame);
+                var native = Output.Writer.BuiltDataWriter.SerializeRegistryNative(srcReg, rov, refl, fort,
+                    fp => fp?.Index ?? 0);   // identity remap (round-trip; texture refs are just int32s on re-read)
+
+                var ci = bdKey.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
+                var rel = ci >= 0 ? bdKey[(ci + 9)..] : bdKey; rel = rel[..^".uasset".Length];
+                var regPkgPath = "/Game/" + rel;
+                var regObjName = srcReg.Name;
+
+                var spw = new Output.Writer.SynthPackageWriter(mountGame, regPkgPath);
+                spw.CustomVersionsOverride = new List<(CUE4Parse.UE4.Objects.Core.Misc.FGuid, int)>();   // empty -> CUE4Parse/editor fall back to EGame defaults (UE5.1 = modern lightmap layout)
+                int enginePkg = spw.AddImport("/Script/CoreUObject", "Package", 0, "/Script/Engine");
+                int regClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MapBuildDataRegistry");
+                byte[] payload;
+                using (var ms = new MemoryStream()) { using var aw = new Output.Writer.FArchiveWriter(ms);
+                    var t = new Output.Writer.TaggedPropertyWriter(aw, spw.Name);
+                    t.Enum("LevelLightingQuality", "ELightingBuildQuality", "ELightingBuildQuality::Quality_Preview");
+                    t.WriteNone();
+                    aw.Write(0);                 // UObject bSerializeGuid = 0
+                    aw.WriteBytes(native);
+                    aw.Flush(); payload = ms.ToArray();
+                }
+                spw.AddExport(regObjName, regClass, 0, 0, payload, 0x1u | 0x8u, 0, true);
+                var tmp = Path.Combine(Path.GetTempPath(), "rt_builtdata.uasset");
+                spw.Write(tmp);
+                Log.Information("Wrote round-trip package {T} ({B} bytes, native {N})", tmp, new FileInfo(tmp).Length, native.Length);
+
+                try
+                {
+                    var bytes = File.ReadAllBytes(tmp);
+                    var rp = new CUE4Parse.UE4.Assets.Package(
+                        new CUE4Parse.UE4.Readers.FByteArchive("rt", bytes, new CUE4Parse.UE4.Versions.VersionContainer(mountGame)),
+                        (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null, (CUE4Parse.UE4.Readers.FArchive?)null,
+                        (CUE4Parse.FileProvider.IFileProvider?)null, false);
+                    CUE4Parse.UE4.Assets.Exports.BuildData.UMapBuildDataRegistry? reg2 = null;
+                    for (var ei = 0; ei < rp.ExportsLazy.Length; ei++)
+                        try { if (rp.ExportsLazy[ei].Value is CUE4Parse.UE4.Assets.Exports.BuildData.UMapBuildDataRegistry r) { reg2 = r; break; } } catch { }
+                    int rtCount = reg2?.MeshBuildData?.Count ?? 0;
+                    Log.Information("Round-trip re-read: {N} MeshBuildData entries (source {S}) -> {R}", rtCount, srcCount, rtCount == srcCount ? "MATCH" : "MISMATCH");
+                    if (reg2?.MeshBuildData != null && srcReg.MeshBuildData != null)
+                    {
+                        foreach (var kv in srcReg.MeshBuildData)
+                        {
+                            if (!reg2.MeshBuildData.TryGetValue(kv.Key, out var v2)) { Log.Warning("  key {K} MISSING after round-trip", kv.Key); continue; }
+                            var a = (kv.Value.LightMap as CUE4Parse.UE4.Assets.Exports.BuildData.FLightMap2D)?.CoordinateScale;
+                            var b = (v2.LightMap as CUE4Parse.UE4.Assets.Exports.BuildData.FLightMap2D)?.CoordinateScale;
+                            Log.Information("  key {K}: coordScale src=({AX},{AY}) rt=({BX},{BY})", kv.Key, a?.X, a?.Y, b?.X, b?.Y);
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex) { Log.Error(ex, "round-trip re-read FAILED"); }
+                return 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.DumpBuiltData))
+            {
+                var mapKey = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(o.DumpBuiltData, StringComparison.OrdinalIgnoreCase) && k.EndsWith(".umap", StringComparison.OrdinalIgnoreCase));
+                if (mapKey == null) { Log.Error("no .umap match for '{S}'", o.DumpBuiltData); return 1; }
+                var shortName = System.IO.Path.GetFileNameWithoutExtension(mapKey);
+                var bdKey = extractor.Provider.Files.Keys.FirstOrDefault(k =>
+                    k.Contains(shortName + "_BuiltData", StringComparison.OrdinalIgnoreCase) && k.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase));
+                Log.Information("Map {M}\nBuiltData {B}", mapKey, bdKey ?? "(none found)");
+
+                var reg = bdKey == null ? null : extractor.Provider.LoadPackage(bdKey).GetExports()
+                    .OfType<CUE4Parse.UE4.Assets.Exports.BuildData.UMapBuildDataRegistry>().FirstOrDefault();
+                var mesh = reg?.MeshBuildData;
+                Log.Information("Registry MeshBuildData entries: {N}", mesh?.Count ?? 0);
+                if (mesh != null)
+                {
+                    int shown = 0;
+                    foreach (var kv in mesh)
+                    {
+                        if (shown++ >= 6) break;
+                        var lm = kv.Value.LightMap as CUE4Parse.UE4.Assets.Exports.BuildData.FLightMap2D;
+                        var texs = lm?.Textures == null ? "-" : string.Join(",", lm.Textures.Select(t => t?.ResolvedObject?.Name.Text ?? "null"));
+                        Console.WriteLine($"  {kv.Key}  lightmapTex=[{texs}]  shadowMap={(kv.Value.ShadowMap != null ? "yes" : "no")}");
+                    }
+                }
+                var regKeys = mesh != null ? new HashSet<CUE4Parse.UE4.Objects.Core.Misc.FGuid>(mesh.Keys) : new();
+
+                var exports = extractor.Provider.LoadPackage(mapKey).GetExports().ToList();
+                int smc = 0, withId = 0, matched = 0;
+                foreach (var e in exports)
+                {
+                    if (e is not CUE4Parse.UE4.Assets.Exports.Component.StaticMesh.UStaticMeshComponent c) continue;
+                    smc++;
+                    var id = c.LODData != null && c.LODData.Length > 0 ? c.LODData[0].MapBuildDataId : default;
+                    if (id != default) withId++;
+                    if (regKeys.Contains(id)) { matched++; if (matched <= 6) Console.WriteLine($"  COMP {e.Name}  MapBuildDataId={id}  -> MATCH"); }
+                }
+                Log.Information("StaticMeshComponents: {S} total, {W} carry a MapBuildDataId, {M} match a registry key", smc, withId, matched);
                 return 0;
             }
 
