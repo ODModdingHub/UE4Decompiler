@@ -29,40 +29,57 @@ public static class PackagePathCanon
         _canon.Clear();
         foreach (var key in virtualKeys)
         {
-            var pkg = ToPackagePath(key);
-            if (pkg == null) continue;
+            var pkg = ToEditorPath(key);
+            if (pkg == null || !pkg.StartsWith("/Game/", StringComparison.Ordinal)) continue;   // only /Game needs case-canon
             // first writer wins; on-disk files are one case so spellings are consistent here
             _canon.TryAdd(pkg.ToLowerInvariant(), pkg);
         }
         _built = true;
     }
 
-    /// <summary>"Mount/Content/Rel/Name.uasset" -> "/Game/Rel/Name" (or "/Mount/Rel/Name" for plugins).</summary>
-    private static string? ToPackagePath(string virtualKey)
+    private static readonly string[] PkgExts = { ".uasset", ".umap", ".uexp", ".ubulk", ".uptnl" };
+
+    /// <summary>Convert a mount-relative virtual/resolved path to the EDITOR package path the editor mounts:
+    ///   "Mount/Content/Rel/Name.uasset" -> "/Game/Rel/Name"
+    ///   "Engine/Content/Rel"            -> "/Engine/Rel"
+    ///   "X/Plugins/.../PluginName/Content/Rel" -> "/PluginName/Rel"
+    /// Legacy .pak packages resolve to this mount-relative form (unlike IoStore which is already "/Game/..."); if the
+    /// import table keeps it, the editor reports "package root is unknown" and the reference never loads.</summary>
+    public static string? ToEditorPath(string virtualKey)
     {
         var k = virtualKey.Replace('\\', '/');
         int ci = k.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
         if (ci < 0) return null;
         var mount = k.Substring(0, ci);
         var rel = k.Substring(ci + "/Content/".Length);
-        int dot = rel.LastIndexOf('.');
-        if (dot >= 0) rel = rel.Substring(0, dot);
-        // game content mounts to /Game/; anything else mounts to /<Mount>/
-        bool isGame = mount.Equals("A2", StringComparison.OrdinalIgnoreCase)
-                   || mount.IndexOf("/Game", StringComparison.OrdinalIgnoreCase) >= 0
-                   || mount.IndexOf("Game", StringComparison.OrdinalIgnoreCase) == mount.Length - 4;
-        // We only need /Game canonicalization for the collision; map every game-content key to /Game/Rel.
-        return "/Game/" + rel;
+        foreach (var ext in PkgExts)
+            if (rel.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) { rel = rel[..^ext.Length]; break; }
+
+        string root;
+        if (mount.IndexOf("/Plugins/", StringComparison.OrdinalIgnoreCase) >= 0)
+            root = "/" + mount.Substring(mount.LastIndexOf('/') + 1) + "/";     // plugin mounts as /<PluginName>/
+        else if (mount.Equals("Engine", StringComparison.OrdinalIgnoreCase) || mount.EndsWith("/Engine", StringComparison.OrdinalIgnoreCase))
+            root = "/Engine/";
+        else
+            root = "/Game/";                                                    // project content -> /Game/
+        return root + rel;
     }
 
-    /// <summary>Rewrite a name-table entry to canonical case if it is a known "/Game/..." package path.</summary>
+    /// <summary>Rewrite a name-table entry: mount-relative virtual path -> editor package path (Game/Engine/Plugin),
+    /// then case-canonicalize "/Game/..." entries against the on-disk casing.</summary>
     public static string Normalize(string name)
     {
         if (!_built || string.IsNullOrEmpty(name)) return name;
-        if (name.Length < 7 || name[0] != '/') return name;
-        if (!name.StartsWith("/Game/", StringComparison.OrdinalIgnoreCase)) return name;
-        // name-table package entries carry no '.'; a dotted string here would be an object path we leave alone
-        if (name.IndexOf('.') >= 0) return name;
-        return _canon.TryGetValue(name.ToLowerInvariant(), out var canon) ? canon : name;
+        // Legacy-pak import paths are mount-relative: no leading '/', contain "/Content/". Convert to editor form.
+        if (name[0] != '/' && name.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            var editor = ToEditorPath(name);
+            if (editor != null) name = editor;
+        }
+        // Case-normalize /Game package entries (no dotted object paths).
+        if (name.StartsWith("/Game/", StringComparison.OrdinalIgnoreCase) && name.IndexOf('.') < 0
+            && _canon.TryGetValue(name.ToLowerInvariant(), out var canon))
+            return canon;
+        return name;
     }
 }

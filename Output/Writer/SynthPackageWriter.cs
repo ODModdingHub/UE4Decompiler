@@ -49,6 +49,16 @@ public sealed class SynthPackageWriter
         i = _names.Count; _names.Add(s); _nameIdx[s] = i; return i;
     }
 
+    /// <summary>Resolve an FName string to (nameTableIndex, serializedNumber) the way UE encodes it: canonicalize the
+    /// path (case + mount-form), split a trailing "_&lt;digits&gt;" into the FName number, and store the BASE in the
+    /// name table. Matches how the editor builds package FNames from file paths — without this, names ending in a
+    /// number (e.g. MI_Wall_Panel_10) trip the "FPackageId collision" assert. See FNameSplit.</summary>
+    public (int idx, int num) NameNum(string s)
+    {
+        var (baseName, number) = FNameSplit.Split(PackagePathCanon.Normalize(s));
+        return (Name(baseName), number);
+    }
+
     private sealed class Imp
     {
         public int ClassPkg, ClassPkgN, ClassName, ClassNameN, Outer, ObjName, ObjNameN;
@@ -103,9 +113,13 @@ public sealed class SynthPackageWriter
         return -_imports.Count;
     }
 
-    /// <summary>Add a synthesized import (number 0). Returns FPackageIndex (negative).</summary>
+    /// <summary>Add a synthesized import. FName strings are split into (base, number) like UE, so package paths ending
+    /// in a number (…MI_Wall_Panel_10) encode identically to the editor's file-derived FName. Returns FPackageIndex (negative).</summary>
     public int AddImport(string classPkg, string className, int outerPkgIndex, string objName)
-        => AddImportRaw(Name(classPkg), 0, Name(className), 0, outerPkgIndex, Name(objName), 0);
+    {
+        var (cp, cpn) = NameNum(classPkg); var (cn, cnn) = NameNum(className); var (on, onn) = NameNum(objName);
+        return AddImportRaw(cp, cpn, cn, cnn, outerPkgIndex, on, onn);
+    }
 
     /// <summary>Re-add a cooked export preserving exact name index + number. Returns FPackageIndex (positive).</summary>
     public int AddExportRaw(int objNameIdx, int objNameN, int classIdx, int superIdx, int templateIdx, int outerIdx,
@@ -131,10 +145,13 @@ public sealed class SynthPackageWriter
         return _exports.Count;
     }
 
-    /// <summary>Add a synthesized export (object-name number 0). Returns FPackageIndex (positive).</summary>
+    /// <summary>Add a synthesized export. Object name is split into (base, number) like UE. Returns FPackageIndex (positive).</summary>
     public int AddExport(string objName, int classPkgIndex, int superPkgIndex, int outerPkgIndex,
         byte[] payload, uint objectFlags = 0, int templatePkgIndex = 0, bool isAsset = false)
-        => AddExportRaw(Name(objName), 0, classPkgIndex, superPkgIndex, templatePkgIndex, outerPkgIndex, payload, objectFlags, isAsset);
+    {
+        var (on, onn) = NameNum(objName);
+        return AddExportRaw(on, onn, classPkgIndex, superPkgIndex, templatePkgIndex, outerPkgIndex, payload, objectFlags, isAsset);
+    }
 
     public void Write(string outPath)
     {
@@ -252,17 +269,8 @@ public sealed class SynthPackageWriter
             using var pms = new MemoryStream(); using var pw = new FArchiveWriter(pms);
             pw.Write(1);                           // ObjectCount
             pw.WriteFString(pa.name);              // ObjectPath (object name, relative to package, for a top-level asset)
-            pw.WriteFString(pa.classPath);         // ClassName (full path, e.g. /Script/Engine.World)
-            if (pa.classPath.EndsWith(".World", StringComparison.Ordinal))
-            {
-                pw.Write(5);                       // World tags (mark it as a Map asset for the browser)
-                pw.WriteFString("PrimaryAssetType");    pw.WriteFString("Map");
-                pw.WriteFString("PrimaryAssetName");    pw.WriteFString(_packageName);
-                pw.WriteFString("LevelBoundsLocation"); pw.WriteFString("V(0)");
-                pw.WriteFString("LevelBoundsExtent");   pw.WriteFString("V(0)");
-                pw.WriteFString("DateModified");        pw.WriteFString("0001.01.01-00.00.00");
-            }
-            else pw.Write(0);                      // TagCount = 0
+            pw.WriteFString(ShortClassName(pa.classPath)); // 4.21 asset-registry ClassName is the short export class.
+            pw.Write(0);                           // TagCount = 0; UE recomputes map tags on load/save.
             pw.Flush();
             return (pms.ToArray(), 1);
         }
@@ -278,7 +286,7 @@ public sealed class SynthPackageWriter
             w.Write(0x00001E1B);
             w.Write(0);
             w.Write(1);
-            w.WriteFString(_names[assets[0].ObjName]);
+            w.WriteFString(Disp(assets[0].ObjName, assets[0].ObjNameN));   // AR ObjectName = full display (base + _N)
             w.WriteFString("/Script/Engine.Material");
             var tags = new (string Key, string Value)[]
             {
@@ -307,11 +315,21 @@ public sealed class SynthPackageWriter
             return (ms.ToArray(), 1);
         }
         w.Write(assets.Count);
-        foreach (var e in assets) { w.WriteFString(_names[e.ObjName]); w.WriteFString(ClassNameOf(e)); w.Write(0); }
+        foreach (var e in assets) { w.WriteFString(Disp(e.ObjName, e.ObjNameN)); w.WriteFString(ClassNameOf(e)); w.Write(0); }
         w.Flush(); return (ms.ToArray(), assets.Count);
     }
 
+    private static string ShortClassName(string classPath)
+    {
+        var dot = classPath.LastIndexOf('.');
+        return dot >= 0 && dot + 1 < classPath.Length ? classPath[(dot + 1)..] : classPath;
+    }
+
     /// <summary>Resolve an export's class name for the AssetRegistry section (import or export ref).</summary>
+    /// <summary>Reassemble the full display FName from a split (nameTableIndex, serialized number): number 0 = the base
+    /// as-is; otherwise "Base_{number-1}" (internal->external). Used where the AssetRegistry needs the display path.</summary>
+    private string Disp(int nameIdx, int number) => number == 0 ? _names[nameIdx] : $"{_names[nameIdx]}_{number - 1}";
+
     private string ClassNameOf(Exp e)
     {
         if (e.ClassIdx < 0) { var i = -e.ClassIdx - 1; if (i < _imports.Count) return _names[_imports[i].ObjName]; }

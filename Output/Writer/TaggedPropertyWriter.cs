@@ -24,7 +24,13 @@ public sealed class TaggedPropertyWriter
 
     public TaggedPropertyWriter(FArchiveWriter w, Func<string, int> nameAdder) { _w = w; _name = nameAdder; }
 
-    private void FName(string s) { _w.Write(_name(s)); _w.Write(0); }   // (index, number=0)
+    // Split a trailing "_<number>" into the FName number field (UE convention) so names like "…_10" encode the same
+    // way the editor builds file-derived FNames — otherwise they collide (FPackageId assert). See FNameSplit.
+    private void FName(string s)
+    {
+        var (baseName, number) = FNameSplit.Split(PackagePathCanon.Normalize(s));
+        _w.Write(_name(baseName)); _w.Write(number);
+    }
 
     /// <summary>Write tag header up to (not including) the value; returns the file offset of Size for backpatch.</summary>
     private long BeginTag(string name, string type, Action? extra = null)

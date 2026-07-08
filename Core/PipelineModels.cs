@@ -6,6 +6,10 @@ namespace UE4Decompiler.Core;
 /// present in the stock engine — a candidate for stub generation so the assets can load.</summary>
 public sealed record GameStub(string Module, string Name, string Kind);
 
+/// <summary>Safe post-dump Blueprint reparent request. The package bytes stay template-shaped during extraction;
+/// Unreal Editor consumes these requests later so it can rebuild the generated class/CDO/SCS layout itself.</summary>
+public sealed record BlueprintReparentRequest(string BlueprintPath, string ParentClassPath, string OutputPath, string? EngineBase);
+
 /// <summary>How faithfully a single asset was recovered.</summary>
 public enum Fidelity
 {
@@ -80,6 +84,12 @@ public sealed class DecompileOptions
 
     /// <summary>Experimental: emit recovered name-only native methods on generated game stubs for K2 member binding.</summary>
     public bool EmitStubMethods { get; init; }
+
+    /// <summary>Recovered game source modules copied into the output project. Blueprints may be reparented to these
+    /// real native classes because UBT can compile and load them, unlike generated placeholder stubs.</summary>
+    public IReadOnlyList<string> NativeSourceModules { get; init; } = Array.Empty<string>();
+
+    public string? NativeSourcePath { get; init; }
 
     public string ContentRoot => Path.Combine(OutputRoot, "Content");
 }

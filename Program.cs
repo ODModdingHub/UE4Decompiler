@@ -56,6 +56,9 @@ public static class Program
         [Option("sdk-dump", HelpText = "Path to an SDK dump dir (Dumper '// CLASS:' headers) to refine stub class prefixes/bases.")]
         public string? SdkDump { get; set; }
 
+        [Option("source-module", HelpText = "Path to recovered UE Source/<Module> dir, or a Source root containing modules. Copies real source into the output project and enables BP reparenting to those /Script modules.")]
+        public string? SourceModule { get; set; }
+
         [Option("dry-run", HelpText = "List what would be extracted without writing anything.")]
         public bool DryRun { get; set; }
 
@@ -516,15 +519,17 @@ public bool GenMeshAll { get; set; }
                         using var bmp = decoded.ToSkBitmap();
                         using var img = SkiaSharp.SKImage.FromBitmap(bmp);
                         using var data = img.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
-                        // virtual key "<Mount>/Content/<rel>.uasset" -> game-relative "<rel>", mirrored under outDir.
-                        var ci = key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
-                        var rel = (ci >= 0 ? key[(ci + 9)..] : key);
-                        rel = rel[..^".uasset".Length];
-                        var pngPath = Path.Combine(outDir, rel.Replace('/', Path.DirectorySeparatorChar) + ".png");
+                        // Resolve the true editor package path (/Game/…, /Engine/…, or /<Plugin>/… for plugin content) so
+                        // the reimport lands the texture in the SAME folder the dump wrote it — plugin textures were
+                        // previously mis-pathed to /Game/. PNG is mirrored under outDir by that path (minus leading '/').
+                        var editorPath = Output.Writer.PackagePathCanon.ToEditorPath(key)
+                            ?? "/Game/" + key[(key.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase) + 9)..^".uasset".Length];
+                        var relForFile = editorPath.TrimStart('/');
+                        var pngPath = Path.Combine(outDir, relForFile.Replace('/', Path.DirectorySeparatorChar) + ".png");
                         Directory.CreateDirectory(Path.GetDirectoryName(pngPath)!);
                         using (var fs = File.Create(pngPath)) data.SaveTo(fs);
                         File.WriteAllText(Path.ChangeExtension(pngPath, ".json"),
-                            $"{{\"game\":\"/Game/{rel}\",\"srgb\":{(tex.SRGB ? "true" : "false")},\"normal\":{(tex.IsNormalMap ? "true" : "false")},\"compression\":\"{tex.CompressionSettings}\"}}");
+                            $"{{\"game\":\"{editorPath}\",\"srgb\":{(tex.SRGB ? "true" : "false")},\"normal\":{(tex.IsNormalMap ? "true" : "false")},\"compression\":\"{tex.CompressionSettings}\"}}");
                         ok++;
                     }
                     catch (Exception ex) { Log.Warning("texture {K}: {M}", key, ex.Message); fail++; }
@@ -975,6 +980,7 @@ public bool GenMeshAll { get; set; }
 
             Output.Writer.TextureWriter.MaxDim = o.TexMax > 0 ? o.TexMax : 1024;
             var projectName = SanitizeProjectName(o.Output);
+            var nativeSourceModules = DiscoverNativeSourceModules(o.SourceModule).ToList();
             // Stubs are what let blueprints that subclass game-native classes reconstruct without crashing, so emit
             // them whenever we're reconstructing blueprints (unless explicitly disabled via --skip-blueprints).
             var emitStubs = o.EmitStubs || !o.SkipBlueprints;
@@ -998,7 +1004,9 @@ public bool GenMeshAll { get; set; }
                 CubePath = o.Cube,
                 BpTemplate = o.BpTemplate,
                 BpRecoverCalls = o.BpRecoverCalls,
-                EmitStubMethods = o.EmitStubMethods
+                EmitStubMethods = o.EmitStubMethods,
+                NativeSourcePath = string.IsNullOrWhiteSpace(o.SourceModule) ? null : Path.GetFullPath(o.SourceModule),
+                NativeSourceModules = nativeSourceModules
             };
 
             // 4. Scaffold project (skipped on dry-run).
@@ -1014,8 +1022,17 @@ public bool GenMeshAll { get; set; }
 
             // 6. Generate C++ stub modules for referenced game-native classes (so game-subclassed blueprints resolve).
             if (emitStubs && !o.DryRun)
-                new Output.Stubs.StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, writer.GameStubs.Values.ToList(),
-                    writer.StubBaseHints, opts.EmitStubMethods ? writer.StubMethodHints.Keys.ToList() : new List<string>());
+            {
+                var realModules = new HashSet<string>(opts.NativeSourceModules, StringComparer.OrdinalIgnoreCase);
+                foreach (var module in DiscoverNativeSourceModules(Path.Combine(opts.OutputRoot, "Source")))
+                    realModules.Add(module);
+                var stubs = writer.GameStubs.Values.Where(s => !realModules.Contains(s.Module)).ToList();
+                new Output.Stubs.StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, stubs,
+                    writer.StubBaseHints, opts.EmitStubMethods ? writer.StubMethodHints.Keys.ToList() : new List<string>(),
+                    realModules);
+            }
+
+            if (!o.DryRun) WriteBlueprintReparentTools(opts, writer.BlueprintReparentRequests.ToList());
 
             // 7. Manifest + summary.
             if (o.Report && !o.DryRun) WriteReport(opts, writer.Manifest);
@@ -1093,6 +1110,84 @@ public bool GenMeshAll { get; set; }
         Log.Information("Wrote report -> {Path}", reportPath);
     }
 
+    private static void WriteBlueprintReparentTools(DecompileOptions opts, List<BlueprintReparentRequest> requests)
+    {
+        requests = requests
+            .GroupBy(r => r.BlueprintPath, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(r => r.BlueprintPath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (requests.Count == 0) return;
+
+        var dir = Path.Combine(opts.OutputRoot, "Saved", "DecompileTools");
+        Directory.CreateDirectory(dir);
+        var manifestPath = Path.Combine(dir, "BlueprintReparentManifest.json");
+        var scriptPath = Path.Combine(dir, "ReparentBlueprints.py");
+        File.WriteAllText(manifestPath, JsonConvert.SerializeObject(requests, Formatting.Indented));
+        File.WriteAllText(scriptPath, BlueprintReparentPython());
+        Log.Information("Wrote {N} Blueprint reparent request(s) -> {Manifest}", requests.Count, manifestPath);
+        Log.Information("After compiling recovered Source modules, run in Unreal Python: {Script}", scriptPath);
+    }
+
+    private static string BlueprintReparentPython() => """
+import json
+import os
+import unreal
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MANIFEST = os.path.join(SCRIPT_DIR, "BlueprintReparentManifest.json")
+
+def log(msg):
+    unreal.log("[UE4D Reparent] " + str(msg))
+
+def warn(msg):
+    unreal.log_warning("[UE4D Reparent] " + str(msg))
+
+with open(MANIFEST, "r", encoding="utf-8") as f:
+    requests = json.load(f)
+
+ok = 0
+failed = 0
+
+for r in requests:
+    bp_path = r.get("BlueprintPath")
+    parent_path = r.get("ParentClassPath")
+    if not bp_path or not parent_path:
+        failed += 1
+        warn("bad manifest row: {}".format(r))
+        continue
+
+    bp = unreal.EditorAssetLibrary.load_asset(bp_path)
+    if not bp:
+        failed += 1
+        warn("missing blueprint asset {}".format(bp_path))
+        continue
+
+    parent = unreal.load_class(None, parent_path)
+    if not parent:
+        failed += 1
+        warn("missing parent class {}; build/load recovered Source first".format(parent_path))
+        continue
+
+    try:
+        unreal.BlueprintEditorLibrary.reparent_blueprint(bp, parent)
+    except Exception as ex:
+        failed += 1
+        warn("reparent failed {} -> {}: {}".format(bp_path, parent_path, ex))
+        continue
+
+    try:
+        unreal.KismetCompilerLibrary.compile_blueprint(bp)
+    except Exception as ex:
+        warn("compile warning {}: {}".format(bp_path, ex))
+
+    unreal.EditorAssetLibrary.save_asset(bp_path, only_if_is_dirty=False)
+    ok += 1
+    log("{} -> {}".format(bp_path, parent_path))
+
+log("done: {} reparented, {} failed".format(ok, failed))
+""";
+
     private static void PrintSummary(List<ManifestEntry> manifest, bool dryRun)
     {
         var table = new Table().Title(dryRun ? "[yellow]Dry-run plan[/]" : "[green]Decompile summary[/]");
@@ -1116,5 +1211,28 @@ public bool GenMeshAll { get; set; }
         var cleaned = new string(name.Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
         if (cleaned.Length == 0 || char.IsDigit(cleaned[0])) cleaned = "P" + cleaned;
         return cleaned;
+    }
+
+    private static IEnumerable<string> DiscoverNativeSourceModules(string? sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath)) yield break;
+        var full = Path.GetFullPath(sourcePath);
+        if (!Directory.Exists(full))
+        {
+            Log.Warning("--source-module path does not exist: {Path}", full);
+            yield break;
+        }
+
+        foreach (var buildCs in Directory.EnumerateFiles(full, "*.Build.cs", SearchOption.TopDirectoryOnly))
+        {
+            yield return Path.GetFileName(buildCs)[..^".Build.cs".Length];
+            yield break;
+        }
+
+        foreach (var dir in Directory.EnumerateDirectories(full))
+        {
+            var buildCs = Directory.EnumerateFiles(dir, "*.Build.cs", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (buildCs != null) yield return Path.GetFileName(buildCs)[..^".Build.cs".Length];
+        }
     }
 }

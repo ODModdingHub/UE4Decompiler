@@ -6296,7 +6296,8 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\drych\\.nuget\\packages\\": {}
+    "C:\\Users\\drych\\.nuget\\packages\\": {},
+    "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
     "version": "1.0.0",
@@ -6307,8 +6308,12 @@
       "packagesPath": "C:\\Users\\drych\\.nuget\\packages\\",
       "outputPath": "C:\\Users\\drych\\Downloads\\CUE4ProjectGenerator\\UE4Decompiler\\obj\\",
       "projectStyle": "PackageReference",
+      "fallbackFolders": [
+        "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+      ],
       "configFilePaths": [
         "C:\\Users\\drych\\AppData\\Roaming\\NuGet\\NuGet.Config",
+        "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
       ],
       "originalTargetFrameworks": [

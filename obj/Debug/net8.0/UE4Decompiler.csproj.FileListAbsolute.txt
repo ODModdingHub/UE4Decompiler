@@ -70,3 +70,5 @@ C:\Users\drych\Downloads\CUE4ProjectGenerator\UE4Decompiler\obj\Debug\net8.0\UE4
 C:\Users\drych\Downloads\CUE4ProjectGenerator\UE4Decompiler\obj\Debug\net8.0\UE4Decompiler.genruntimeconfig.cache
 C:\Users\drych\Downloads\CUE4ProjectGenerator\UE4Decompiler\obj\Debug\net8.0\ref\UE4Decompiler.dll
 C:\Users\drych\Downloads\CUE4ProjectGenerator\UE4Decompiler\obj\Debug\net8.0\UE4Decompiler.sourcelink.json
+C:\Users\drych\Downloads\CUE4ProjectGenerator\UE4Decompiler\bin\Debug\net8.0\CUE4Parse-Natives.dll
+C:\Users\drych\Downloads\CUE4ProjectGenerator\UE4Decompiler\bin\Debug\net8.0\CUE4Parse-Natives.pdb

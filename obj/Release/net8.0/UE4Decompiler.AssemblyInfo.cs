@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("UE4Decompiler")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+693f04ceeca5fba06663cd8fe4861f40d925a52d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b2f5f8bbbfe72603caddf312c449489e4148bb64")]
 [assembly: System.Reflection.AssemblyProductAttribute("UE4Decompiler")]
 [assembly: System.Reflection.AssemblyTitleAttribute("UE4Decompiler")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

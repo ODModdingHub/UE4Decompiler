@@ -796,10 +796,17 @@ public static class BlueprintGraphBuilder
                 for (int i = 0; i < inject.Count; i++)
                 {
                     var c = inject[i];
-                    if (!classImpCache.TryGetValue(c.CompClass, out var compClassImp))
-                    { compClassImp = spw.AddImport("/Script/CoreUObject", "Class", enginePkgImp, c.CompClass); classImpCache[c.CompClass] = compClassImp; }
+                    // Only emit component classes whose native serialization tail we model exactly: StaticMeshComponent
+                    // (UCSMod int32 + LODData int32) and everything else as SceneComponent (UCSMod int32). Emitting an
+                    // exotic class (SkyLightComponent, PostProcessComponent, …) with a guessed tail makes its Serialize
+                    // read the wrong number of bytes -> "Serial size mismatch: Got X, Expected Y" -> HARD content-browser
+                    // crash. Substituting to SceneComponent keeps the BP loadable (component is inert) while meshes,
+                    // the actual visual payload, stay intact.
+                    var safeClass = c.CompClass == "StaticMeshComponent" ? "StaticMeshComponent" : "SceneComponent";
+                    if (!classImpCache.TryGetValue(safeClass, out var compClassImp))
+                    { compClassImp = spw.AddImport("/Script/CoreUObject", "Class", enginePkgImp, safeClass); classImpCache[safeClass] = compClassImp; }
                     int meshImp = 0;
-                    if (c.MeshPkg != null && c.MeshName != null)
+                    if (c.MeshPkg != null && c.MeshName != null && safeClass == "StaticMeshComponent")
                     {
                         if (!pkgImpCache.TryGetValue(c.MeshPkg, out var mp)) { mp = spw.AddImport("/Script/CoreUObject", "Package", 0, c.MeshPkg); pkgImpCache[c.MeshPkg] = mp; }
                         meshImp = spw.AddImport("/Script/Engine", "StaticMesh", mp, c.MeshName);
@@ -808,14 +815,13 @@ public static class BlueprintGraphBuilder
                     // Component template (archetype) under the BGC.
                         using (var ms = new MemoryStream()) { using var w = new FArchiveWriter(ms);
                         var t = new TaggedPropertyWriter(w, spw.Name);
-                        if (meshImp != 0 && c.CompClass == "StaticMeshComponent") t.Object("StaticMesh", meshImp);
+                        if (meshImp != 0) t.Object("StaticMesh", meshImp);
                         t.ByteEnum("Mobility", "EComponentMobility::Type", "EComponentMobility::Movable");
                         if (c.Loc[0] != 0 || c.Loc[1] != 0 || c.Loc[2] != 0) t.Struct("RelativeLocation", "Vector", () => { w.Write(c.Loc[0]); w.Write(c.Loc[1]); w.Write(c.Loc[2]); });
                         if (c.Rot[0] != 0 || c.Rot[1] != 0 || c.Rot[2] != 0) t.Struct("RelativeRotation", "Rotator", () => { w.Write(c.Rot[0]); w.Write(c.Rot[1]); w.Write(c.Rot[2]); });
                         if (c.Scale[0] != 1 || c.Scale[1] != 1 || c.Scale[2] != 1) t.Struct("RelativeScale3D", "Vector", () => { w.Write(c.Scale[0]); w.Write(c.Scale[1]); w.Write(c.Scale[2]); });
                         t.WriteNone(); w.Write(0);                              // UActorComponent: UCSModifiedProperties count
-                        if (IsLightComponent(c.CompClass)) WriteEmptyLegacyStaticShadowDepthMap(w);
-                        if (c.CompClass == "StaticMeshComponent") w.Write(0);   // UStaticMeshComponent: LODData int32
+                        if (safeClass == "StaticMeshComponent") w.Write(0);    // UStaticMeshComponent: LODData int32
                         w.Flush();
                         spw.AddExportRaw(spw.Name(c.VarName + "_GEN_VARIABLE"), 0, compClassImp, 0, 0, bgcPkg, ms.ToArray(), 0x1 | 0x8 | 0x20, false);
                     }
@@ -942,7 +948,7 @@ public static class BlueprintGraphBuilder
         // Place actors from any /Script/ module. Game-native actor classes (/Script/Pavlov.*) get a stub, and we
         // report each as needing an AActor base (its component -> USceneComponent) via onGameClass so the stub is
         // actually spawnable — placing one whose stub defaulted to UObject is what crashed the editor before.
-        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, bool actorHidden, bool compVisible, bool compHiddenInGame, bool editorOnly, bool absLoc, bool absRot, bool absScale, string? textValue, float worldSize, CUE4Parse.UE4.Objects.Core.Misc.FGuid mapBuildId, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
+        var place = new List<(string actorPkg, string actorClass, string compPkg, string compClass, string compName, string label, float[] loc, float[] rot, float[] scale, string? meshPkg, string? meshName, string? worldAsset, List<(string? pkg, string? name, string? cls)> overrideMats, bool actorHidden, bool compVisible, bool compHiddenInGame, bool editorOnly, bool absLoc, bool absRot, bool absScale, string? textValue, float worldSize, (string? pkg, string? name, string? cls) decalMat, float[] decalSize, CUE4Parse.UE4.Objects.Core.Misc.FGuid mapBuildId, CUE4Parse.UE4.Assets.Exports.UObject sourceComp)>();
         foreach (var e in srcExports)
         {
             // Top-level actor = export whose Outer is the PersistentLevel.
@@ -1016,6 +1022,13 @@ public static class BlueprintGraphBuilder
                 actorPkg = "/Script/Engine"; actorCls = "TextRenderActor";
                 compPkg = "/Script/Engine"; compCls = "TextRenderComponent";
             }
+            else if (actorCls.EndsWith("DecalActor", StringComparison.Ordinal) || compCls.Contains("DecalComponent", StringComparison.Ordinal))
+            {
+                // DecalActor's root is a UDecalComponent ("NewDecalComponent"). Keep it a DecalComponent (NOT downgraded
+                // to SceneComponent) and re-emit DecalMaterial + DecalSize so the decal actually projects its material.
+                actorPkg = "/Script/Engine"; actorCls = "DecalActor";
+                compPkg = "/Script/Engine"; compCls = "DecalComponent";
+            }
             else if (actorPkg != "/Script/Engine") { actorPkg = "/Script/Engine"; actorCls = "StaticMeshActor"; compPkg = "/Script/Engine"; compCls = "StaticMeshComponent"; }
             else if (compPkg != "/Script/Engine") { compPkg = "/Script/Engine"; compCls = "SceneComponent"; }
             try
@@ -1061,7 +1074,9 @@ public static class BlueprintGraphBuilder
                 catch { }
                 string? meshPkg = null, meshName = null;
                 string? textValue = null; float worldSize = 100f;
+                (string? pkg, string? name, string? cls) decalMat = (null, null, null); float[] decalSize = { 128f, 256f, 256f };
                 bool isTextRender = actorCls == "TextRenderActor";
+                bool isDecal = actorCls == "DecalActor";
                 if (isTextRender)
                 {
                     // Text actor: capture the displayed string + size off the (Ax)TextRenderComponent; no mesh.
@@ -1072,6 +1087,19 @@ public static class BlueprintGraphBuilder
                     }
                     catch { }
                     compPkg = "/Script/Engine"; compCls = "TextRenderComponent";
+                }
+                else if (isDecal)
+                {
+                    // Decal actor: capture DecalMaterial (the projected material) + DecalSize off the DecalComponent; no mesh.
+                    try
+                    {
+                        var dm = meshComp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("DecalMaterial")?.ResolvedObject;
+                        if (dm != null) decalMat = (PackagePathOfResolved(dm), dm.Name.Text, dm.Class?.Name.Text);
+                        var ds = meshComp.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FVector>("DecalSize");
+                        if (ds.X != 0 || ds.Y != 0 || ds.Z != 0) decalSize = new[] { (float)ds.X, (float)ds.Y, (float)ds.Z };
+                    }
+                    catch { }
+                    compPkg = "/Script/Engine"; compCls = "DecalComponent";
                 }
                 else
                 {
@@ -1107,7 +1135,7 @@ public static class BlueprintGraphBuilder
                 catch { }
                 while (overrideMats.Count > 0 && overrideMats[^1].pkg == null) overrideMats.RemoveAt(overrideMats.Count - 1); // trim trailing default slots
                 if (overrideMats.All(m => m.pkg == null)) overrideMats.Clear();
-                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, actorHidden, compVisible, compHiddenInGame, editorOnly, absLoc, absRot, absScale, textValue, worldSize, mapBuildId, rootComp));
+                place.Add((actorPkg, actorCls, compPkg, compCls, rootComp.Name, label, loc, rot, scl, meshPkg, meshName, worldAsset, overrideMats, actorHidden, compVisible, compHiddenInGame, editorOnly, absLoc, absRot, absScale, textValue, worldSize, decalMat, decalSize, mapBuildId, rootComp));
             }
             catch { /* skip actors whose component fails to parse (missing imports) */ }
         }
@@ -1315,6 +1343,17 @@ public static class BlueprintGraphBuilder
                 {
                     t.Text("Text", "", "", a.textValue ?? "");
                     t.Float("WorldSize", a.worldSize);
+                }
+                // DecalActor: bind the projected DecalMaterial (import) + DecalSize so the decal renders its material.
+                if (a.compClass == "DecalComponent")
+                {
+                    if (a.decalMat.pkg != null && a.decalMat.name != null)
+                    {
+                        if (!pkgImpCache.TryGetValue(a.decalMat.pkg, out var dmp)) { dmp = spw.AddImport("/Script/CoreUObject", "Package", 0, a.decalMat.pkg); pkgImpCache[a.decalMat.pkg] = dmp; }
+                        int dmImp = spw.AddImport("/Script/Engine", string.IsNullOrEmpty(a.decalMat.cls) ? "MaterialInstanceConstant" : a.decalMat.cls, dmp, a.decalMat.name);
+                        t.Object("DecalMaterial", dmImp);
+                    }
+                    t.Struct("DecalSize", "Vector", () => { w.Write(a.decalSize[0]); w.Write(a.decalSize[1]); w.Write(a.decalSize[2]); });
                 }
                 // Preserve the cooked component's visibility (default bVisible=true / bHiddenInGame=false, so only
                 // write when they differ — an actor hidden/disabled in-game must stay hidden here).

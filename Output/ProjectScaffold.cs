@@ -39,6 +39,9 @@ public sealed class ProjectScaffold
             WriteDefaultGame();
             WriteDefaultEditor();
         }
+        if (!string.IsNullOrWhiteSpace(_opts.NativeSourcePath) && _opts.NativeSourceModules.Count > 0)
+            CopyNativeSource();
+
         Log.Information("Scaffolded project {Name} (engine {Assoc}) at {Root} [uproject={U}, configs={C}]",
             _opts.ProjectName, _opts.EngineAssociation, _opts.OutputRoot,
             realUproject ? "real" : "generated", realConfigs ? "real" : "generated");
@@ -185,6 +188,120 @@ public sealed class ProjectScaffold
         };
         var path = Path.Combine(_opts.OutputRoot, _opts.ProjectName + ".uproject");
         File.WriteAllText(path, JsonConvert.SerializeObject(uproject, Formatting.Indented));
+    }
+
+    private void CopyNativeSource()
+    {
+        var sourceRoot = Path.Combine(_opts.OutputRoot, "Source");
+        Directory.CreateDirectory(sourceRoot);
+
+        var modulesCopied = new List<string>();
+        foreach (var module in _opts.NativeSourceModules)
+        {
+            var src = ResolveNativeModulePath(_opts.NativeSourcePath!, module);
+            if (src is null)
+            {
+                Log.Warning("--source-module did not contain module {Module}", module);
+                continue;
+            }
+
+            var dest = Path.Combine(sourceRoot, module);
+            CopyDirectory(src, dest);
+            modulesCopied.Add(module);
+            Log.Information("Copied recovered native module {Module} -> {Dest}", module, dest);
+        }
+
+        if (modulesCopied.Count == 0) return;
+        WriteTargetFiles(modulesCopied);
+        PatchUProjectModules(modulesCopied);
+    }
+
+    private static string? ResolveNativeModulePath(string sourcePath, string module)
+    {
+        var full = Path.GetFullPath(sourcePath);
+        if (File.Exists(Path.Combine(full, module + ".Build.cs"))) return full;
+        var nested = Path.Combine(full, module);
+        return File.Exists(Path.Combine(nested, module + ".Build.cs")) ? nested : null;
+    }
+
+    private static void CopyDirectory(string src, string dest)
+    {
+        Directory.CreateDirectory(dest);
+        foreach (var dir in Directory.EnumerateDirectories(src, "*", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(src, dir);
+            Directory.CreateDirectory(Path.Combine(dest, rel));
+        }
+        foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(src, file);
+            var outFile = Path.Combine(dest, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
+            File.Copy(file, outFile, overwrite: true);
+        }
+    }
+
+    private void WriteTargetFiles(IReadOnlyList<string> modules)
+    {
+        var sourceDir = Path.Combine(_opts.OutputRoot, "Source");
+        Directory.CreateDirectory(sourceDir);
+        var list = string.Join(", ", modules.Select(m => $"\"{m}\""));
+
+        File.WriteAllText(Path.Combine(sourceDir, $"{_opts.ProjectName}.Target.cs"),
+            $$"""
+            using UnrealBuildTool;
+            using System.Collections.Generic;
+
+            public class {{_opts.ProjectName}}Target : TargetRules
+            {
+                public {{_opts.ProjectName}}Target(TargetInfo Target) : base(Target)
+                {
+                    Type = TargetType.Game;
+                    DefaultBuildSettings = BuildSettingsVersion.Latest;
+                    IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+                    CppStandard = CppStandardVersion.Cpp20;
+                    bWarningsAsErrors = false;
+                    ExtraModuleNames.AddRange(new string[] { {{list}} });
+                }
+            }
+            """);
+
+        File.WriteAllText(Path.Combine(sourceDir, $"{_opts.ProjectName}Editor.Target.cs"),
+            $$"""
+            using UnrealBuildTool;
+            using System.Collections.Generic;
+
+            public class {{_opts.ProjectName}}EditorTarget : TargetRules
+            {
+                public {{_opts.ProjectName}}EditorTarget(TargetInfo Target) : base(Target)
+                {
+                    Type = TargetType.Editor;
+                    DefaultBuildSettings = BuildSettingsVersion.Latest;
+                    IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+                    CppStandard = CppStandardVersion.Cpp20;
+                    bWarningsAsErrors = false;
+                    ExtraModuleNames.AddRange(new string[] { {{list}} });
+                }
+            }
+            """);
+    }
+
+    private void PatchUProjectModules(IReadOnlyList<string> modules)
+    {
+        var uproject = Directory.EnumerateFiles(_opts.OutputRoot, "*.uproject").FirstOrDefault();
+        if (uproject is null) return;
+
+        var root = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(uproject));
+        var arr = new Newtonsoft.Json.Linq.JArray();
+        foreach (var module in modules)
+            arr.Add(new Newtonsoft.Json.Linq.JObject
+            {
+                ["Name"] = module,
+                ["Type"] = "Runtime",
+                ["LoadingPhase"] = "Default",
+            });
+        root["Modules"] = arr;
+        File.WriteAllText(uproject, root.ToString(Newtonsoft.Json.Formatting.Indented));
     }
 
     private void WriteDefaultEngine()

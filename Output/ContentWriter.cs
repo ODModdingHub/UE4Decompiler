@@ -4,6 +4,7 @@ using CUE4Parse_Conversion.Meshes;
 using CUE4Parse.UE4.Objects.UObject;
 using CUE4Parse.Utils;
 using Serilog;
+using System.Text.RegularExpressions;
 using UE4Decompiler.Core;
 using UE4Decompiler.Output.Writer;
 using UE4Decompiler.Reconstructors;
@@ -43,6 +44,8 @@ public sealed class ContentWriter
     /// <summary>Recovered game-native methods referenced by BP bytecode, keyed "Module.Class:Function".
     /// These are only emitted when --emit-stub-methods is enabled; name-only functions are experimental.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, byte> StubMethodHints { get; } = new();
+
+    public System.Collections.Concurrent.ConcurrentBag<BlueprintReparentRequest> BlueprintReparentRequests { get; } = new();
 
     /// <summary>Plugin mount names discovered in the pak (e.g. "CustomMapTools"); each gets a content-only .uplugin
     /// scaffolded so the editor mounts "/&lt;Name&gt;/" and the plugin's cooked references resolve.</summary>
@@ -349,6 +352,123 @@ public sealed class ContentWriter
         catch (Exception ex) { Log.Warning(ex, "Engine module scan failed; using core set only"); }
         _engineModuleNames = set;
         return set;
+    }
+
+    private sealed record NativeSourceClassInfo(string Module, string ScriptName, string CppName, string BaseCppName, string? EngineBase);
+
+    private Dictionary<string, NativeSourceClassInfo>? _nativeSourceClasses;
+    private Dictionary<string, NativeSourceClassInfo> NativeSourceClasses()
+    {
+        if (_nativeSourceClasses != null) return _nativeSourceClasses;
+
+        var byPath = new Dictionary<string, NativeSourceClassInfo>(StringComparer.OrdinalIgnoreCase);
+        var byCpp = new Dictionary<string, NativeSourceClassInfo>(StringComparer.Ordinal);
+        foreach (var (module, dir) in EnumerateNativeSourceModuleDirs())
+        {
+            foreach (var header in Directory.EnumerateFiles(dir, "*.h", SearchOption.AllDirectories))
+            {
+                string text;
+                try { text = File.ReadAllText(header); }
+                catch { continue; }
+
+                foreach (Match m in SourceClassDeclarationRegex.Matches(text))
+                {
+                    var cpp = m.Groups["cls"].Value;
+                    var baseCpp = m.Groups["base"].Value;
+                    if (string.IsNullOrWhiteSpace(cpp) || string.IsNullOrWhiteSpace(baseCpp)) continue;
+                    var scriptName = ToUnrealScriptClassName(cpp);
+                    if (!IsCppIdentifier(module) || !IsCppIdentifier(scriptName)) continue;
+
+                    var info = new NativeSourceClassInfo(module, scriptName, cpp, baseCpp, null);
+                    byCpp[cpp] = info;
+                    byPath[$"/Script/{module}.{scriptName}"] = info;
+                }
+            }
+        }
+
+        foreach (var (path, info) in byPath.ToArray())
+            byPath[path] = info with { EngineBase = ResolveNativeEngineBase(info.BaseCppName, byCpp) };
+
+        if (byPath.Count > 0)
+            Log.Information("Recovered native source scan: {N} UCLASS(es) available for BP reparenting", byPath.Count);
+        _nativeSourceClasses = byPath;
+        return byPath;
+    }
+
+    private static readonly Regex SourceClassDeclarationRegex = new(
+        @"\bclass\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*_API)\s+)?(?<cls>[AU][A-Za-z_][A-Za-z0-9_]*)\s*:\s*public\s+(?<base>[AU][A-Za-z_][A-Za-z0-9_]*)",
+        RegexOptions.Compiled);
+
+    private IEnumerable<(string module, string dir)> EnumerateNativeSourceModuleDirs()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in new[] { _opts.NativeSourcePath, Path.Combine(_opts.OutputRoot, "Source") })
+        {
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            var full = Path.GetFullPath(root);
+            if (!Directory.Exists(full)) continue;
+
+            foreach (var item in EnumerateNativeSourceModuleDirs(full))
+            {
+                if (seen.Add(item.dir)) yield return item;
+            }
+        }
+    }
+
+    private static IEnumerable<(string module, string dir)> EnumerateNativeSourceModuleDirs(string full)
+    {
+        foreach (var buildCs in Directory.EnumerateFiles(full, "*.Build.cs", SearchOption.TopDirectoryOnly))
+        {
+            yield return (Path.GetFileName(buildCs)[..^".Build.cs".Length], full);
+            yield break;
+        }
+
+        foreach (var dir in Directory.EnumerateDirectories(full))
+        {
+            var buildCs = Directory.EnumerateFiles(dir, "*.Build.cs", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (buildCs != null) yield return (Path.GetFileName(buildCs)[..^".Build.cs".Length], dir);
+        }
+    }
+
+    private static string ToUnrealScriptClassName(string cppName) =>
+        cppName.Length > 1 && (cppName[0] == 'A' || cppName[0] == 'U') ? cppName[1..] : cppName;
+
+    private static string? ResolveNativeEngineBase(string cppBase, IReadOnlyDictionary<string, NativeSourceClassInfo> byCpp, int depth = 0)
+    {
+        if (depth > 32 || string.IsNullOrWhiteSpace(cppBase)) return null;
+        var direct = cppBase switch
+        {
+            "ACharacter" => "ACharacter",
+            "APlayerController" => "APlayerController",
+            "AAIController" => "AAIController",
+            "AController" => "AController",
+            "APawn" => "APawn",
+            "AGameModeBase" or "AGameMode" => "AGameModeBase",
+            "AGameStateBase" or "AGameState" => "AGameStateBase",
+            "APlayerState" => "APlayerState",
+            "APlayerCameraManager" => "APlayerCameraManager",
+            "ALevelScriptActor" => "ALevelScriptActor",
+            "AHUD" => "AHUD",
+            "AVolume" or "ATriggerVolume" => "AVolume",
+            "AActor" => "AActor",
+            "UUserWidget" => "UUserWidget",
+            "UAnimInstance" => "UAnimInstance",
+            "USceneComponent" or "UStaticMeshComponent" or "ULightComponent" or "UPointLightComponent" or
+                "USpotLightComponent" or "UDirectionalLightComponent" or "UTextRenderComponent" or
+                "UPoseableMeshComponent" => "USceneComponent",
+            "UActorComponent" or "UMovementComponent" => "UActorComponent",
+            "UGameInstance" => "UGameInstance",
+            "USaveGame" => "USaveGame",
+            "UDataAsset" or "UPrimaryDataAsset" => "UDataAsset",
+            "UObject" => "UObject",
+            _ => null
+        };
+        if (direct != null) return direct;
+
+        if (byCpp.TryGetValue(cppBase, out var sourceBase))
+            return ResolveNativeEngineBase(sourceBase.BaseCppName, byCpp, depth + 1);
+
+        return GuessEngineBaseFromClassName(cppBase);
     }
 
     /// <summary>Walk an import's OuterIndex chain to the top-level package import name (e.g. "/Script/Pavlov").</summary>
@@ -931,6 +1051,18 @@ public sealed class ContentWriter
         return EngineModuleNames().Contains(scriptPath["/Script/".Length..dot]);
     }
 
+    private bool IsNativeSourceModuleClassPath(string? scriptPath)
+    {
+        if (string.IsNullOrWhiteSpace(scriptPath) || !scriptPath.StartsWith("/Script/", StringComparison.Ordinal)) return false;
+        return NativeSourceClasses().ContainsKey(scriptPath);
+    }
+
+    private string? GetNativeSourceEngineBaseForClassPath(string? scriptPath)
+    {
+        if (string.IsNullOrWhiteSpace(scriptPath) || !scriptPath.StartsWith("/Script/", StringComparison.Ordinal)) return null;
+        return NativeSourceClasses().TryGetValue(scriptPath, out var info) ? info.EngineBase : null;
+    }
+
     private static string? GetBlueprintParentClassPath(ParsedAsset asset)
     {
         foreach (var e in asset.Exports)
@@ -1007,6 +1139,11 @@ public sealed class ContentWriter
         "AGameModeBase" or "AGameStateBase" or "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or
         "AHUD" or "AVolume";
 
+    private static bool IsReparentTemplateSupported(string? engineBase) => engineBase is
+        "AActor" or "APawn" or "ACharacter" or "AController" or "APlayerController" or "AAIController" or
+        "AGameModeBase" or "AGameStateBase" or "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or
+        "AHUD" or "AVolume" or "UUserWidget" or "UAnimInstance" or "USceneComponent" or "UActorComponent";
+
     private static string? ResolveBlueprintTemplate(string configuredTemplate, string? engineBase)
     {
         var dir = Directory.Exists(configuredTemplate)
@@ -1058,14 +1195,19 @@ public sealed class ContentWriter
                 ? recoveredCalls
                 : new List<(string scriptPkg, string cls, string func)>();
             var parentClass = GetBlueprintParentClassPath(asset);
-            // REPARENTING DISABLED. SCS recovery + real BP-class actor placement worked fine until we started
-            // patching the clone's UBlueprint.ParentClass / BlueprintGeneratedClass.SuperIndex to the recovered
-            // parent — that is the regression (it breaks BP construction/load even for engine parents, because the
-            // family template's CDO/SCS is shaped for the template's own parent, not the re-pointed super). The
-            // per-family template already gives the clone the correct base class, so no SuperIndex patch is needed.
-            // parentClass is still used below only as a hint for picking the family template.
-            string? reparentClass = null;
-            var parentEngineBase = GetBlueprintParentEngineBase(asset) ?? GetStubBaseHintForClassPath(parentClass);
+            // Pick the closest template family from the recovered parent, but do not byte-patch the
+            // BP's ParentClass/BGC SuperIndex by default. The cloned CDO/SCS payload is still shaped
+            // like the template BP; pointing it at another native class makes worlds that instantiate
+            // the BP deserialize the actor with the wrong native layout.
+            var parentEngineBase = GetBlueprintParentEngineBase(asset)
+                ?? GetNativeSourceEngineBaseForClassPath(parentClass)
+                ?? GetStubBaseHintForClassPath(parentClass);
+            var allowNativeReparent = Environment.GetEnvironmentVariable("UE4D_ALLOW_NATIVE_BP_REPARENT") == "1";
+            if (!string.IsNullOrWhiteSpace(parentClass) && IsNativeSourceModuleClassPath(parentClass))
+                BlueprintReparentRequests.Add(new BlueprintReparentRequest(packageName, parentClass, outputAsset, parentEngineBase));
+            string? reparentClass = allowNativeReparent && IsNativeSourceModuleClassPath(parentClass) && IsReparentTemplateSupported(parentEngineBase)
+                ? parentClass
+                : null;
             var templatePath = ResolveBlueprintTemplate(_opts.BpTemplate!, parentEngineBase);
             if (string.IsNullOrWhiteSpace(templatePath))
             {
@@ -1077,12 +1219,13 @@ public sealed class ContentWriter
                     Path.GetFileNameWithoutExtension(outputAsset), packageName, CUE4Parse.UE4.Versions.EGame.GAME_UE4_21, scs, graphCalls, reparentClass))
                 return false;
             var parentNote = string.IsNullOrWhiteSpace(parentClass) ? "" : $", parent={parentClass}";
+            var reparentNote = string.IsNullOrWhiteSpace(reparentClass) ? "" : ", reparented";
             var callsNote = _opts.BpRecoverCalls ? $", {graphCalls.Count} call node(s)" : "";
             var methodsNote = _opts.EmitStubMethods ? $", {recoveredCalls.Count} recovered call ref(s)" : "";
             var baseNote = string.IsNullOrWhiteSpace(parentEngineBase) ? "" : $", base={parentEngineBase}";
             var templateNote = $", template={Path.GetFileName(templatePath)}";
-            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"blueprint (template + {scs.Count} SCS comp(s){callsNote}{methodsNote}{parentNote}{baseNote}{templateNote})"
-                                                          : entry.Note + $"; blueprint (template + {scs.Count} SCS comp(s){callsNote}{methodsNote}{parentNote}{baseNote}{templateNote})";
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"blueprint (template + {scs.Count} SCS comp(s){callsNote}{methodsNote}{parentNote}{reparentNote}{baseNote}{templateNote})"
+                                                          : entry.Note + $"; blueprint (template + {scs.Count} SCS comp(s){callsNote}{methodsNote}{parentNote}{reparentNote}{baseNote}{templateNote})";
             return true;
         }
         // Legacy byte-based reconstruction: 4.21 (legacy Package) only, gated to crash-safe BPs.

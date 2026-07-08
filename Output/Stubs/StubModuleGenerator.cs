@@ -31,17 +31,24 @@ public sealed class StubModuleGenerator
 
     public void Generate(string outputRoot, IReadOnlyCollection<GameStub> stubs,
         IReadOnlyDictionary<string, string>? baseHints = null,
-        IReadOnlyCollection<string>? methodHints = null)
+        IReadOnlyCollection<string>? methodHints = null,
+        IReadOnlyCollection<string>? existingModules = null)
     {
         _baseHints = baseHints ?? new Dictionary<string, string>();
         _methodHints = ParseMethodHints(methodHints);
-        if (stubs.Count == 0) { Log.Information("--emit-stubs: no game-module types referenced; nothing to generate."); return; }
+        var existing = existingModules?.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                       ?? new List<string>();
+        if (stubs.Count == 0 && existing.Count == 0)
+        {
+            Log.Information("--emit-stubs: no game-module types referenced; nothing to generate.");
+            return;
+        }
 
         var uproject = Directory.EnumerateFiles(outputRoot, "*.uproject").FirstOrDefault();
         var projectName = uproject is not null ? Path.GetFileNameWithoutExtension(uproject) : "Game";
 
         var byModule = stubs.GroupBy(s => s.Module).ToDictionary(g => g.Key, g => g.ToList());
-        var moduleNames = byModule.Keys.OrderBy(m => m).ToList();
+        var moduleNames = existing.Concat(byModule.Keys).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(m => m).ToList();
         // Primary game module: prefer one matching the project name, else the first.
         var primary = moduleNames.FirstOrDefault(m => string.Equals(m, projectName, StringComparison.OrdinalIgnoreCase))
                       ?? moduleNames.First();
@@ -50,15 +57,19 @@ public sealed class StubModuleGenerator
         report.AppendLine($"# Stub generation report — {stubs.Count} types across {moduleNames.Count} module(s)");
         report.AppendLine($"Primary game module: {primary}").AppendLine();
 
-        foreach (var module in moduleNames)
+        foreach (var module in byModule.Keys.OrderBy(m => m))
             WriteModule(outputRoot, module, byModule[module], module == primary, report);
 
         WriteTargetFiles(outputRoot, projectName, moduleNames);
         PatchUProject(uproject, moduleNames, primary);
 
         File.WriteAllText(Path.Combine(outputRoot, "STUBS_REPORT.md"), report.ToString());
-        Log.Information("--emit-stubs: generated {N} stub module(s) ({Types} types). Generate VS project files and build. See STUBS_REPORT.md",
-            moduleNames.Count, stubs.Count);
+        if (stubs.Count == 0)
+            Log.Information("--emit-stubs: registered {N} recovered native module(s); no stub types to generate. See STUBS_REPORT.md",
+                moduleNames.Count);
+        else
+            Log.Information("--emit-stubs: generated {N} stub module(s) ({Types} types). Generate VS project files and build. See STUBS_REPORT.md",
+                byModule.Count, stubs.Count);
     }
 
     private void WriteModule(string outputRoot, string module, List<GameStub> types, bool isPrimary, StringBuilder report)
