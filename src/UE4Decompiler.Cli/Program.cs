@@ -23,6 +23,18 @@ public static class Program
             return ExitCodes.Success;
         }
 
+        if (args.Length == 1 && (args[0].Equals("--help", StringComparison.OrdinalIgnoreCase) || args[0].Equals("-h", StringComparison.OrdinalIgnoreCase) || args[0] == "-?" || args[0] == "/?"))
+        {
+            PrintWelcomeBanner();
+            PrintHelp();
+            return ExitCodes.Success;
+        }
+
+        if (args.Length == 1 && (args[0].Equals("--version", StringComparison.OrdinalIgnoreCase) || args[0].Equals("-v", StringComparison.OrdinalIgnoreCase) || args[0].Equals("version", StringComparison.OrdinalIgnoreCase)))
+        {
+            return await RunVersionAsync(new VersionOptions());
+        }
+
         var isNoColor = args.Any(a => a.Equals("--no-color", StringComparison.OrdinalIgnoreCase));
         if (isNoColor)
         {
@@ -54,12 +66,14 @@ public static class Program
         // Check if modern verb was requested
         if (Verbs.Contains(firstArg))
         {
+            args[0] = firstArg.ToLowerInvariant();
             using var verbParser = new Parser(with =>
             {
                 with.AutoVersion = false;
                 with.HelpWriter = Console.Error;
                 with.CaseInsensitiveEnumValues = true;
             });
+
 
             return await verbParser.ParseArguments<
                 InspectOptions,
