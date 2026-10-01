@@ -1,4 +1,14 @@
 <Project>
+  <PropertyGroup>
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <Product>UE4Decompiler</Product>
+    <Company>UE4Decompiler Contributors</Company>
+    <Authors>UE4Decompiler Contributors</Authors>
+    <Description>Unreal Engine 4 &amp; 5 Asset Recovery Pipeline</Description>
+  </PropertyGroup>
+
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj')">
     <ProjectReference Include="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
     <ProjectReference Include="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" />
