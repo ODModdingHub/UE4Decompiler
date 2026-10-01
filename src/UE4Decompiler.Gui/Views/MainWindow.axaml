@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:UE4Decompiler.Gui.ViewModels"
+        xmlns:views="using:UE4Decompiler.Gui.Views"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="700"
+        x:Class="UE4Decompiler.Gui.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="UE4Decompiler - Unreal Engine Asset Recovery"
+        Width="1140" Height="740"
+        WindowStartupLocation="CenterScreen"
+        Background="#181B1F">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <Grid ColumnDefinitions="220, *" RowDefinitions="*, 30">
+        <!-- Sidebar Navigation -->
+        <Border Grid.Column="0" Grid.Row="0" Background="#14171A" BorderBrush="#252A30" BorderThickness="0,0,1,0">
+            <DockPanel Margin="16, 20">
+                <!-- Branding -->
+                <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,24">
+                    <TextBlock Text="UE4Decompiler" FontSize="18" FontWeight="Bold" Foreground="#4E9A06" />
+                    <TextBlock Text="Asset Ripper Edition" FontSize="11" Foreground="#707070" />
+                </StackPanel>
+
+                <!-- Navigation Buttons -->
+                <StackPanel Spacing="6" VerticalAlignment="Top">
+                    <Button Content="Home" Command="{Binding NavigateHomeCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,10" Background="Transparent" />
+                    <Button Content="Asset Browser" Command="{Binding NavigateBrowserCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,10" Background="Transparent" />
+                    <Button Content="Recovery Queue" Command="{Binding NavigateQueueCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,10" Background="Transparent" />
+                    <Button Content="Doctor Diagnostics" Command="{Binding NavigateDoctorCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,10" Background="Transparent" />
+                    <Button Content="Settings" Command="{Binding NavigateSettingsCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="12,10" Background="Transparent" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Main Content View -->
+        <Border Grid.Column="1" Grid.Row="0" Background="#181B1F">
+            <TransitioningContentControl Content="{Binding CurrentPage}">
+                <TransitioningContentControl.DataTemplates>
+                    <DataTemplate DataType="{x:Type vm:HomeViewModel}">
+                        <views:HomeView />
+                    </DataTemplate>
+                    <DataTemplate DataType="{x:Type vm:AssetBrowserViewModel}">
+                        <views:AssetBrowserView />
+                    </DataTemplate>
+                    <DataTemplate DataType="{x:Type vm:JobQueueViewModel}">
+                        <views:JobQueueView />
+                    </DataTemplate>
+                    <DataTemplate DataType="{x:Type vm:DoctorViewModel}">
+                        <views:DoctorView />
+                    </DataTemplate>
+                    <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+                        <views:SettingsView />
+                    </DataTemplate>
+                </TransitioningContentControl.DataTemplates>
+            </TransitioningContentControl>
+        </Border>
+
+        <!-- Status Bar -->
+        <Border Grid.Column="0" Grid.ColumnSpan="2" Grid.Row="1" Background="#111316" BorderBrush="#252A30" BorderThickness="0,1,0,0" Padding="12,0">
+            <Grid ColumnDefinitions="*, Auto">
+                <TextBlock Grid.Column="0" Text="{Binding StatusText}" FontSize="11" Foreground="#808080" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="v2.0.0 | .NET 8.0 Cross-Platform" FontSize="11" Foreground="#606060" VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
