@@ -54,7 +54,14 @@ public static class Program
         // Check if modern verb was requested
         if (Verbs.Contains(firstArg))
         {
-            return await Parser.Default.ParseArguments<
+            using var verbParser = new Parser(with =>
+            {
+                with.AutoVersion = false;
+                with.HelpWriter = Console.Error;
+                with.CaseInsensitiveEnumValues = true;
+            });
+
+            return await verbParser.ParseArguments<
                 InspectOptions,
                 ScanOptions,
                 RecoverOptions,
