@@ -35,6 +35,15 @@ public sealed class ContentWriter
     private readonly AudioReconstructor _audio = new();
     private readonly InputReconstructor _input = new();
     private readonly AnimationReconstructor _anim = new();
+    private readonly WidgetReconstructor _widget = new();
+    private readonly PhysicsReconstructor _physics = new();
+    private readonly ParticleReconstructor _particle = new();
+    private readonly GameplayAbilityReconstructor _gas = new();
+    private readonly FoliageReconstructor _foliage = new();
+    private readonly LandscapeReconstructor _landscape = new();
+    private readonly SubsurfaceReconstructor _subsurface = new();
+    private readonly MediaReconstructor _media = new();
+    private readonly IKRigReconstructor _ikrig = new();
 
     public List<ManifestEntry> Manifest { get; } = new();
     private readonly object _manifestLock = new();   // pipeline runs Process in parallel
@@ -47,6 +56,9 @@ public sealed class ContentWriter
 
     /// <summary>Custom collision channels discovered across all packages, for DefaultEngine.ini scaffolding.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, string> DiscoveredCollisionChannels { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Custom physical surface types discovered across all packages, for DefaultEngine.ini scaffolding.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, string> DiscoveredPhysicalSurfaces { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Game-module types referenced by imports, keyed "Module.Name" — for stub generation.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, GameStub> GameStubs { get; } = new();
@@ -273,10 +285,18 @@ public sealed class ContentWriter
                             }
                         }
                     }
+                    else if (prop.Name.Text == "SurfaceType" && prop.Tag?.GenericValue is CUE4Parse.UE4.Objects.UObject.FName stName)
+                    {
+                        var st = stName.Text;
+                        if (!string.IsNullOrEmpty(st) && !st.Equals("SurfaceType_Default", StringComparison.OrdinalIgnoreCase))
+                            DiscoveredPhysicalSurfaces.TryAdd(st, Path.GetFileNameWithoutExtension(asset.File.Path));
+                    }
                 }
                 catch { }
             }
         }
+        foreach (var kvp in PhysicsReconstructor.DiscoveredPhysicalSurfaces)
+            DiscoveredPhysicalSurfaces.TryAdd(kvp.Key, kvp.Value);
     }
 
     private void AddGameStub(CUE4Parse.UE4.Assets.ResolvedObject? ro, string? baseHint = null)
@@ -908,20 +928,65 @@ public sealed class ContentWriter
         {
             // curve written
         }
-        else if (asset.PrimaryType is "SoundWave" or "SoundCue" or "SoundAttenuation"
+        else if (asset.PrimaryType is "SoundWave" or "SoundCue" or "SoundAttenuation" or "SoundClass" or "SoundSubmix" or "SoundMix" or "SoundMixModifier"
                  && TryWriteAudio(asset, outputAsset, packageName, entry))
         {
-            // sound wave written
+            // sound wave / cue / attenuation / class / submix / mix written
         }
         else if (asset.PrimaryType is "InputAction" or "InputMappingContext"
                  && TryWriteInput(asset, outputAsset, packageName, entry))
         {
             // enhanced input written
         }
-        else if (asset.PrimaryType is "Skeleton" or "AnimSequence" or "AnimMontage" or "BlendSpace" or "BlendSpace1D" or "PhysicsAsset"
+        else if (asset.PrimaryType is "Skeleton" or "AnimSequence" or "AnimMontage" or "BlendSpace" or "BlendSpace1D"
                  && TryWriteAnimation(asset, outputAsset, packageName, entry))
         {
-            // animation / skeleton / physics written
+            // animation / skeleton written
+        }
+        else if (asset.PrimaryType is "WidgetBlueprint" or "WidgetBlueprintGeneratedClass"
+                 && TryWriteWidget(asset, outputAsset, packageName, entry))
+        {
+            // widget blueprint written
+        }
+        else if (asset.PrimaryType is "PhysicalMaterial" or "PhysicsAsset"
+                 && TryWritePhysics(asset, outputAsset, packageName, entry))
+        {
+            // physical material or physics asset written
+        }
+        else if (asset.PrimaryType is "NiagaraSystem" or "NiagaraEmitter" or "ParticleSystem"
+                 && TryWriteParticle(asset, outputAsset, packageName, entry))
+        {
+            // particle system written
+        }
+        else if (asset.PrimaryType is "AttributeSet" or "GameplayAttributeSet" or "GameplayEffect" or "GameplayAbility"
+                 && TryWriteGas(asset, outputAsset, packageName, entry))
+        {
+            // GAS asset written
+        }
+        else if (asset.PrimaryType is "FoliageType" or "FoliageType_InstancedStaticMesh"
+                 && TryWriteFoliage(asset, outputAsset, packageName, entry))
+        {
+            // foliage type written
+        }
+        else if (asset.PrimaryType is "Landscape" or "LandscapeProxy" or "LandscapeStreamingProxy" or "LandscapeLayerInfoObject"
+                 && TryWriteLandscape(asset, outputAsset, packageName, entry))
+        {
+            // landscape written
+        }
+        else if (asset.PrimaryType.Equals("SubsurfaceProfile", StringComparison.OrdinalIgnoreCase)
+                 && TryWriteSubsurface(asset, outputAsset, packageName, entry))
+        {
+            // subsurface profile written
+        }
+        else if (asset.PrimaryType is "FileMediaSource" or "StreamMediaSource" or "MediaPlayer" or "MediaTexture"
+                 && TryWriteMedia(asset, outputAsset, packageName, entry))
+        {
+            // media written
+        }
+        else if (asset.PrimaryType is "IKRigDefinition" or "IKRetargeter" or "ControlRig"
+                 && TryWriteIKRig(asset, outputAsset, packageName, entry))
+        {
+            // IK rig / retargeter written
         }
         else if (!TryWriteUncooked(asset, outputAsset, entry))
             // No editor-loadable form for this type. Do NOT write a stub header: a half-formed .uasset reads as
@@ -1039,7 +1104,10 @@ public sealed class ContentWriter
                                          || s.EndsWith("_soundcue.py", StringComparison.OrdinalIgnoreCase)
                                          || s.EndsWith("_attenuation.py", StringComparison.OrdinalIgnoreCase)
                                          || s.EndsWith("_soundcue.json", StringComparison.OrdinalIgnoreCase)
-                                         || s.EndsWith("_attenuation.json", StringComparison.OrdinalIgnoreCase)))
+                                         || s.EndsWith("_attenuation.json", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_soundclass.json", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_soundsubmix.json", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_soundmix.json", StringComparison.OrdinalIgnoreCase)))
             {
                 entry.Fidelity = Fidelity.Full;
                 return true;
@@ -1086,6 +1154,178 @@ public sealed class ContentWriter
         catch (Exception ex)
         {
             Log.Debug(ex, "TryWriteAnimation failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteWidget(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            var boundVars = WidgetReconstructor.ExtractBindWidgets(asset);
+            var note = $"WidgetBlueprint recovered ({boundVars.Count} bound variable(s))";
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? note : entry.Note + $"; {note}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteWidget failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWritePhysics(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWritePhysics failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteParticle(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} particle recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} particle recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteParticle failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteGas(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} GAS asset recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} GAS asset recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteGas failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteFoliage(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "FoliageType recovered"
+                                                          : entry.Note + "; FoliageType recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteFoliage failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteLandscape(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} terrain asset recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} terrain asset recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteLandscape failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteSubsurface(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "SubsurfaceProfile optical model recovered"
+                                                          : entry.Note + "; SubsurfaceProfile optical model recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteSubsurface failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteMedia(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} Media Framework asset recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} Media Framework asset recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteMedia failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteIKRig(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Fidelity = Fidelity.Full;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} skeletal rig asset recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} skeletal rig asset recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteIKRig failed for {Path}", asset.File.Path);
             return false;
         }
     }
@@ -2306,7 +2546,12 @@ public sealed class ContentWriter
             && asset.PrimaryType is not ("StaticMesh" or "SkeletalMesh"))
             return _mesh.Reconstruct(asset, outputNoExt);
 
-        // Any *BlueprintGeneratedClass (Anim/Widget/plain) and UBlueprint route to the BP reconstructor.
+        // Widget blueprints route to the dedicated widget reconstructor
+        if (asset.PrimaryType.Equals("WidgetBlueprint", StringComparison.OrdinalIgnoreCase) ||
+            asset.PrimaryType.Equals("WidgetBlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase))
+            return _widget.Reconstruct(asset, outputNoExt);
+
+        // Any *BlueprintGeneratedClass (Anim/plain) and UBlueprint route to the BP reconstructor.
         if (asset.PrimaryType.Equals("Blueprint", StringComparison.OrdinalIgnoreCase) ||
             asset.PrimaryType.EndsWith("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase))
             return _blueprint.Reconstruct(asset, outputNoExt);
@@ -2317,12 +2562,20 @@ public sealed class ContentWriter
             "StaticMesh" or "SkeletalMesh" => _mesh.Reconstruct(asset, outputNoExt),
             "Material" or "MaterialInstanceConstant" => _material.Reconstruct(asset, outputNoExt),
             "World" or "Level" => _level.Reconstruct(asset, outputNoExt),
-            "SoundWave" or "SoundCue" or "SoundAttenuation" => _audio.Reconstruct(asset, outputNoExt, _opts.NoMediaExport),
+            "SoundWave" or "SoundCue" or "SoundAttenuation" or "SoundClass" or "SoundSubmix" or "SoundMix" or "SoundMixModifier" => _audio.Reconstruct(asset, outputNoExt, _opts.NoMediaExport),
             "DataTable" or "CompositeDataTable" => _dataTable.Reconstruct(asset, outputNoExt),
             "StringTable" => _stringTable.Reconstruct(asset, outputNoExt),
             "CurveFloat" or "CurveVector" or "CurveLinearColor" or "CurveTable" => _curve.Reconstruct(asset, outputNoExt),
             "InputAction" or "InputMappingContext" => _input.Reconstruct(asset, outputNoExt),
-            "Skeleton" or "AnimSequence" or "AnimMontage" or "BlendSpace" or "BlendSpace1D" or "PhysicsAsset" => _anim.Reconstruct(asset, outputNoExt),
+            "Skeleton" or "AnimSequence" or "AnimMontage" or "BlendSpace" or "BlendSpace1D" => _anim.Reconstruct(asset, outputNoExt),
+            "PhysicalMaterial" or "PhysicsAsset" => _physics.Reconstruct(asset, outputNoExt),
+            "NiagaraSystem" or "NiagaraEmitter" or "ParticleSystem" => _particle.Reconstruct(asset, outputNoExt),
+            "AttributeSet" or "GameplayAttributeSet" or "GameplayEffect" or "GameplayAbility" => _gas.Reconstruct(asset, outputNoExt),
+            "FoliageType" or "FoliageType_InstancedStaticMesh" => _foliage.Reconstruct(asset, outputNoExt),
+            "Landscape" or "LandscapeProxy" or "LandscapeStreamingProxy" or "LandscapeLayerInfoObject" => _landscape.Reconstruct(asset, outputNoExt),
+            "SubsurfaceProfile" => _subsurface.Reconstruct(asset, outputNoExt),
+            "FileMediaSource" or "StreamMediaSource" or "MediaPlayer" or "MediaTexture" => _media.Reconstruct(asset, outputNoExt),
+            "IKRigDefinition" or "IKRetargeter" or "ControlRig" => _ikrig.Reconstruct(asset, outputNoExt),
             _ => Generic(asset)
         };
     }

@@ -253,6 +253,10 @@ public sealed class DecompilerService : IDecompilerService
                 {
                     scaffold.WriteDefaultCollision(writer.DiscoveredCollisionProfiles.Keys, writer.DiscoveredCollisionChannels.Keys);
                 }
+                if (writer.DiscoveredPhysicalSurfaces.Count > 0)
+                {
+                    scaffold.WriteDefaultPhysics(writer.DiscoveredPhysicalSurfaces);
+                }
                 if (resolvedOptions.EmitStubs)
                 {
                     new StubModuleGenerator(null).Generate(resolvedOptions.OutputRoot, writer.GameStubs.Values.ToList(), writer.StubBaseHints);

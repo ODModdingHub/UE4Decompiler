@@ -414,6 +414,193 @@ public sealed class McpToolRegistry
                     },
                     required = new[] { "outputRoot" }
                 }
+            },
+            new()
+            {
+                Name = "ue_inspect_widget",
+                Description = "Inspect a UMG Widget Blueprint or WidgetTree to extract UI hierarchy, slot geometry (canvas anchors/offsets), styling, text, and bound variables.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        widgetPath = new { type = "string", description = "Virtual asset package path of the Widget Blueprint asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "widgetPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_physics",
+                Description = "Inspect a PhysicsAsset or PhysicalMaterial to extract skeletal collision bodies (spheres/boxes/capsules), joint constraints, or surface friction/restitution.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        physicsPath = new { type = "string", description = "Virtual asset package path of the physics asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "physicsPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_particle",
+                Description = "Inspect a Niagara System or Cascade Particle System to extract exposed user parameters, emitter handles, simulation targets, and renderers.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        particlePath = new { type = "string", description = "Virtual asset package path of the Niagara or Cascade asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "particlePath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_gas",
+                Description = "Inspect Gameplay Ability System (GAS) assets (UAttributeSet, UGameplayEffect, UGameplayAbility) to extract attribute definitions, duration policies, and modifiers.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        gasPath = new { type = "string", description = "Virtual asset package path of the GAS asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "gasPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_foliage",
+                Description = "Inspect a UFoliageType asset to extract static mesh bindings, placement density, radius, scaling variation, and collision settings.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        foliagePath = new { type = "string", description = "Virtual asset package path of the foliage asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "foliagePath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_landscape",
+                Description = "Inspect a Landscape, LandscapeProxy, or LandscapeLayerInfoObject to extract component grid layout, heightmaps, weightmaps, layer blend allocations, and materials.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        landscapePath = new { type = "string", description = "Virtual asset package path of the landscape or layer info asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "landscapePath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_subsurface",
+                Description = "Inspect a SubsurfaceProfile asset to extract scatter radius, falloff color, boundary bleed, roughness parameters, and Burley normalized diffusion settings.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        profilePath = new { type = "string", description = "Virtual asset package path of the subsurface profile asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "profilePath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_media",
+                Description = "Inspect Unreal Media Framework assets (FileMediaSource, StreamMediaSource, MediaPlayer, MediaTexture) to extract video file paths, playback settings, and render bindings.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        mediaPath = new { type = "string", description = "Virtual asset package path of the media asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "mediaPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_sound_graph",
+                Description = "Inspect SoundClass, SoundSubmix, or SoundMix assets to extract routing hierarchies, volume/pitch curves, LPF filters, ducking arrays, and effect chains.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        audioPath = new { type = "string", description = "Virtual asset package path of the sound class, submix, or sound mix asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "audioPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_streaming",
+                Description = "Inspect level streaming and World Partition metadata for a world map to extract sublevel packages, streaming transforms, initial load/visibility states, and data layers.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        mapPath = new { type = "string", description = "Virtual asset package path of the level map." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "mapPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_ik_rig",
+                Description = "Inspect Unreal Engine 5 IK Rig, IK Retargeter, or Control Rig assets to extract skeletal mesh bindings, bone chains, IK goals, solvers, and retarget mappings.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        rigPath = new { type = "string", description = "Virtual asset package path of the IK Rig or IK Retargeter asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "rigPath" }
+                }
             }
         };
     }
@@ -1473,7 +1660,7 @@ public sealed class McpToolRegistry
                         return McpToolCallResult.Text($"Directory '{outputRoot}' does not exist.", isError: true);
 
                     var scripts = new List<object>();
-                    var validSuffixes = new[] { "_reconstruct.py", "_sockets.py", "_mic_setup.py", "_soundcue.py", "_attenuation.py", "_setup.py", "ReconstructAllLevels.py" };
+                    var validSuffixes = new[] { "_reconstruct.py", "_sockets.py", "_mic_setup.py", "_soundcue.py", "_attenuation.py", "_soundclass.py", "_soundsubmix.py", "_soundmix.py", "_widget_setup.py", "_physmat_setup.py", "_physics_setup.py", "_niagara_setup.py", "_cascade_setup.py", "_foliage_setup.py", "_landscape_setup.py", "_layerinfo_setup.py", "_subsurface_setup.py", "_media_setup.py", "_ikrig_setup.py", "_setup.py", "ReconstructAllLevels.py" };
 
                     foreach (var f in Directory.EnumerateFiles(outputRoot, "*.py", SearchOption.AllDirectories))
                     {
@@ -1486,8 +1673,22 @@ public sealed class McpToolRegistry
                                 : scriptName.EndsWith("_mic_setup.py") ? "MaterialInstance"
                                 : scriptName.EndsWith("_soundcue.py") ? "SoundCue"
                                 : scriptName.EndsWith("_attenuation.py") ? "SoundAttenuation"
+                                : scriptName.EndsWith("_soundclass.py") ? "SoundClass"
+                                : scriptName.EndsWith("_soundsubmix.py") ? "SoundSubmix"
+                                : scriptName.EndsWith("_soundmix.py") ? "SoundMix"
+                                : scriptName.EndsWith("_widget_setup.py") ? "WidgetBlueprint"
+                                : scriptName.EndsWith("_physmat_setup.py") ? "PhysicalMaterial"
+                                : scriptName.EndsWith("_physics_setup.py") ? "PhysicsAsset"
+                                : scriptName.EndsWith("_niagara_setup.py") ? "NiagaraSystem"
+                                : scriptName.EndsWith("_cascade_setup.py") ? "CascadeParticle"
+                                : scriptName.EndsWith("_foliage_setup.py") ? "FoliageType"
+                                : scriptName.EndsWith("_landscape_setup.py") ? "Landscape"
+                                : scriptName.EndsWith("_layerinfo_setup.py") ? "LandscapeLayerInfo"
+                                : scriptName.EndsWith("_subsurface_setup.py") ? "SubsurfaceProfile"
+                                : scriptName.EndsWith("_media_setup.py") ? "MediaFramework"
+                                : scriptName.EndsWith("_ikrig_setup.py") ? "IKRig"
                                 : scriptName.EndsWith("ReconstructAllLevels.py") ? "MasterBatchRunner"
-                                : "CurveOrInput";
+                                : "ReconstructionScript";
 
                             scripts.Add(new
                             {
@@ -1505,6 +1706,443 @@ public sealed class McpToolRegistry
                         OutputRoot = outputRoot,
                         TotalScripts = scripts.Count,
                         Scripts = scripts
+                    });
+                }
+
+                case "ue_inspect_widget":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var widgetPath = arguments.GetProperty("widgetPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = widgetPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Widget asset '{widgetPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse widget asset '{widgetPath}'.", isError: true);
+
+                    var wr = new WidgetReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = wr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Widget = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_physics":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var physicsPath = arguments.GetProperty("physicsPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = physicsPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Physics asset '{physicsPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse physics asset '{physicsPath}'.", isError: true);
+
+                    var pr = new PhysicsReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = pr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Physics = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_particle":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var particlePath = arguments.GetProperty("particlePath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = particlePath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Particle asset '{particlePath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse particle asset '{particlePath}'.", isError: true);
+
+                    var pr = new ParticleReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = pr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Particle = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_gas":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var gasPath = arguments.GetProperty("gasPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = gasPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"GAS asset '{gasPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse GAS asset '{gasPath}'.", isError: true);
+
+                    var gr = new GameplayAbilityReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = gr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Gas = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_foliage":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var foliagePath = arguments.GetProperty("foliagePath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = foliagePath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Foliage asset '{foliagePath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse foliage asset '{foliagePath}'.", isError: true);
+
+                    var fr = new FoliageReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = fr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Foliage = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_landscape":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var landscapePath = arguments.GetProperty("landscapePath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = landscapePath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Landscape asset '{landscapePath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse landscape asset '{landscapePath}'.", isError: true);
+
+                    var lr = new LandscapeReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = lr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Landscape = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_subsurface":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var profilePath = arguments.GetProperty("profilePath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = profilePath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Subsurface profile '{profilePath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse subsurface profile '{profilePath}'.", isError: true);
+
+                    var sr = new SubsurfaceReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = sr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Subsurface = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_media":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var mediaPath = arguments.GetProperty("mediaPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = mediaPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Media asset '{mediaPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse media asset '{mediaPath}'.", isError: true);
+
+                    var mr = new MediaReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = mr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Media = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_sound_graph":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var audioPath = arguments.GetProperty("audioPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = audioPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Audio asset '{audioPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse audio asset '{audioPath}'.", isError: true);
+
+                    var ar = new AudioReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = ar.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Audio = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_streaming":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var mapPath = arguments.GetProperty("mapPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = mapPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".umap", StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Level map '{mapPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse level map '{mapPath}'.", isError: true);
+
+                    var lr = new LevelReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = lr.Reconstruct(parsed, tempOut);
+
+                    var streamingJsonPath = tempOut + "_streaming.json";
+                    object? streamingDetails = null;
+                    if (File.Exists(streamingJsonPath))
+                    {
+                        streamingDetails = JsonSerializer.Deserialize<object>(File.ReadAllText(streamingJsonPath));
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Map = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Streaming = streamingDetails ?? new { TotalStreamingLevels = 0, Message = "No sublevels or data layers found in map package." }
+                    });
+                }
+
+                case "ue_inspect_ik_rig":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var rigPath = arguments.GetProperty("rigPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE5_1;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = rigPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"IK Rig asset '{rigPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse IK Rig asset '{rigPath}'.", isError: true);
+
+                    var ikr = new IKRigReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = ikr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Rig = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
                     });
                 }
 

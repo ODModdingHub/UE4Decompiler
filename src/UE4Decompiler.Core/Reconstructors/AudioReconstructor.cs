@@ -42,6 +42,24 @@ public sealed class AudioReconstructor
                 return ReconstructSoundAttenuation(soundAtten, asset, outputPathNoExt);
             }
 
+            var soundClass = asset.Exports.FirstOrDefault(e => e.ExportType == "SoundClass");
+            if (soundClass != null)
+            {
+                return ReconstructSoundClass(soundClass, asset, outputPathNoExt);
+            }
+
+            var soundSubmix = asset.Exports.FirstOrDefault(e => e.ExportType.Contains("SoundSubmix", StringComparison.OrdinalIgnoreCase));
+            if (soundSubmix != null)
+            {
+                return ReconstructSoundSubmix(soundSubmix, asset, outputPathNoExt);
+            }
+
+            var soundMix = asset.Exports.FirstOrDefault(e => e.ExportType is "SoundMix" or "SoundMixModifier");
+            if (soundMix != null)
+            {
+                return ReconstructSoundMix(soundMix, asset, outputPathNoExt);
+            }
+
             // Other composite audio assets
             return new ReconstructionResult
             {
@@ -370,6 +388,276 @@ public sealed class AudioReconstructor
         return sb.ToString();
     }
 
+    private static ReconstructionResult ReconstructSoundClass(UObject soundClass, ParsedAsset asset, string outputPathNoExt)
+    {
+        var outDir = Path.GetDirectoryName(outputPathNoExt);
+        if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
+
+        var name = Path.GetFileNameWithoutExtension(outputPathNoExt);
+        var props = soundClass.GetOrDefault<FStructFallback>("Properties");
+        var volume = props?.GetOrDefault<float>("Volume", 1.0f) ?? 1.0f;
+        var pitch = props?.GetOrDefault<float>("Pitch", 1.0f) ?? 1.0f;
+        var lpf = props?.GetOrDefault<float>("LowPassFilterFrequency", 20000.0f) ?? 20000.0f;
+        var bApplyAmbient = props?.GetOrDefault<bool>("bApplyAmbientVolumes", false) ?? false;
+        var bIsUI = props?.GetOrDefault<bool>("bIsUISound", false) ?? false;
+        var bIsMusic = props?.GetOrDefault<bool>("bIsMusic", false) ?? false;
+        var defaultSubmix = props?.GetOrDefault<FPackageIndex>("DefaultSubmix")?.ResolvedObject?.GetPathName();
+
+        var parent = soundClass.GetOrDefault<FPackageIndex>("ParentClass")?.ResolvedObject?.GetPathName();
+        var children = new List<string>();
+        var childArr = soundClass.GetOrDefault<FPackageIndex[]>("ChildClasses");
+        if (childArr != null)
+        {
+            foreach (var ch in childArr)
+            {
+                var chPath = ch?.ResolvedObject?.GetPathName();
+                if (!string.IsNullOrEmpty(chPath)) children.Add(chPath);
+            }
+        }
+
+        var jsonPath = outputPathNoExt + "_soundclass.json";
+        var model = new
+        {
+            AssetType = "SoundClass",
+            Name = name,
+            VirtualPath = asset.File.Path,
+            Volume = volume,
+            Pitch = pitch,
+            LowPassFilterFrequency = lpf,
+            bApplyAmbientVolumes = bApplyAmbient,
+            bIsUISound = bIsUI,
+            bIsMusic = bIsMusic,
+            DefaultSubmix = defaultSubmix,
+            ParentClass = parent,
+            ChildClasses = children
+        };
+
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(jsonPath, JsonSerializer.Serialize(model, jsonOptions));
+
+        var pyPath = outputPathNoExt + "_soundclass.py";
+        var pyScript = GenerateSoundClassPythonScript(name, asset.File.Path, volume, pitch, lpf, bIsUI, bIsMusic, parent, defaultSubmix);
+        File.WriteAllText(pyPath, pyScript, Encoding.UTF8);
+
+        Log.Information("SoundClass {Name}: Volume={Vol:F2}, Pitch={Pitch:F2}, Parent={Parent}",
+            name, volume, pitch, parent ?? "None");
+
+        return new ReconstructionResult
+        {
+            Fidelity = Fidelity.Full,
+            Note = $"SoundClass recovered: Vol {volume:F2}, Pitch {pitch:F2}, Parent '{Path.GetFileName(parent ?? "None")}'",
+            Model = model,
+            SidecarFiles = new List<string> { jsonPath, pyPath }
+        };
+    }
+
+    private static ReconstructionResult ReconstructSoundSubmix(UObject soundSubmix, ParsedAsset asset, string outputPathNoExt)
+    {
+        var outDir = Path.GetDirectoryName(outputPathNoExt);
+        if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
+
+        var name = Path.GetFileNameWithoutExtension(outputPathNoExt);
+        var parent = soundSubmix.GetOrDefault<FPackageIndex>("ParentSubmix")?.ResolvedObject?.GetPathName();
+        var children = new List<string>();
+        var childArr = soundSubmix.GetOrDefault<FPackageIndex[]>("ChildSubmixes");
+        if (childArr != null)
+        {
+            foreach (var ch in childArr)
+            {
+                var chPath = ch?.ResolvedObject?.GetPathName();
+                if (!string.IsNullOrEmpty(chPath)) children.Add(chPath);
+            }
+        }
+
+        var jsonPath = outputPathNoExt + "_soundsubmix.json";
+        var model = new
+        {
+            AssetType = soundSubmix.ExportType,
+            Name = name,
+            VirtualPath = asset.File.Path,
+            ParentSubmix = parent,
+            ChildSubmixes = children
+        };
+
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(jsonPath, JsonSerializer.Serialize(model, jsonOptions));
+
+        var pyPath = outputPathNoExt + "_soundsubmix.py";
+        var pyScript = GenerateSoundSubmixPythonScript(name, asset.File.Path, soundSubmix.ExportType, parent);
+        File.WriteAllText(pyPath, pyScript, Encoding.UTF8);
+
+        Log.Information("SoundSubmix {Name}: Parent={Parent}, {Children} child(ren)",
+            name, parent ?? "None", children.Count);
+
+        return new ReconstructionResult
+        {
+            Fidelity = Fidelity.Full,
+            Note = $"SoundSubmix recovered: Parent '{Path.GetFileName(parent ?? "None")}', {children.Count} children",
+            Model = model,
+            SidecarFiles = new List<string> { jsonPath, pyPath }
+        };
+    }
+
+    private static ReconstructionResult ReconstructSoundMix(UObject soundMix, ParsedAsset asset, string outputPathNoExt)
+    {
+        var outDir = Path.GetDirectoryName(outputPathNoExt);
+        if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
+
+        var name = Path.GetFileNameWithoutExtension(outputPathNoExt);
+        var effects = new List<SoundClassAdjusterData>();
+        var rawEffects = soundMix.GetOrDefault<FStructFallback[]>("SoundClassEffects");
+        if (rawEffects != null)
+        {
+            foreach (var eff in rawEffects)
+            {
+                var scRef = eff.GetOrDefault<FPackageIndex>("SoundClassObject")?.ResolvedObject?.GetPathName();
+                var volAdj = eff.GetOrDefault<float>("VolumeAdjuster", 1.0f);
+                var pitchAdj = eff.GetOrDefault<float>("PitchAdjuster", 1.0f);
+                var lpf = eff.GetOrDefault<float>("LowPassFilterFrequency", 20000.0f);
+                var applyChildren = eff.GetOrDefault<bool>("bApplyToChildren", true);
+                effects.Add(new SoundClassAdjusterData(scRef, volAdj, pitchAdj, lpf, applyChildren));
+            }
+        }
+
+        var jsonPath = outputPathNoExt + "_soundmix.json";
+        var model = new
+        {
+            AssetType = soundMix.ExportType,
+            Name = name,
+            VirtualPath = asset.File.Path,
+            SoundClassEffects = effects
+        };
+
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(jsonPath, JsonSerializer.Serialize(model, jsonOptions));
+
+        var pyPath = outputPathNoExt + "_soundmix.py";
+        var pyScript = GenerateSoundMixPythonScript(name, asset.File.Path, effects);
+        File.WriteAllText(pyPath, pyScript, Encoding.UTF8);
+
+        Log.Information("SoundMix {Name}: {Effects} sound class adjuster(s)", name, effects.Count);
+
+        return new ReconstructionResult
+        {
+            Fidelity = Fidelity.Full,
+            Note = $"SoundMix recovered: {effects.Count} class adjuster(s)",
+            Model = model,
+            SidecarFiles = new List<string> { jsonPath, pyPath }
+        };
+    }
+
+    private static string GenerateSoundClassPythonScript(string name, string virtualPath, float volume, float pitch, float lpf, bool isUI, bool isMusic, string? parent, string? defaultSubmix)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine($"# Reconstructed SoundClass: {name}");
+        sb.AppendLine($"# Source Package: {virtualPath}");
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine("import unreal");
+        sb.AppendLine();
+        sb.AppendLine("def setup_sound_class():");
+        sb.AppendLine($"    asset_path = '{virtualPath.Replace('\\', '/')}'");
+        sb.AppendLine("    pkg_name = asset_path.rsplit('.', 1)[0]");
+        sb.AppendLine("    asset_name = pkg_name.rsplit('/', 1)[-1]");
+        sb.AppendLine("    pkg_path = pkg_name.rsplit('/', 1)[0]");
+        sb.AppendLine();
+        sb.AppendLine("    sc = unreal.load_asset(pkg_name)");
+        sb.AppendLine("    if not sc:");
+        sb.AppendLine("        asset_tools = unreal.AssetToolsHelpers.get_asset_tools()");
+        sb.AppendLine("        factory = unreal.SoundClassFactory()");
+        sb.AppendLine("        sc = asset_tools.create_asset(asset_name, pkg_path, unreal.SoundClass, factory)");
+        sb.AppendLine();
+        sb.AppendLine("    if sc:");
+        sb.AppendLine("        props = sc.get_editor_property('properties')");
+        sb.AppendLine($"        props.set_editor_property('volume', {volume.ToString("F2", CultureInfo.InvariantCulture)})");
+        sb.AppendLine($"        props.set_editor_property('pitch', {pitch.ToString("F2", CultureInfo.InvariantCulture)})");
+        sb.AppendLine($"        props.set_editor_property('low_pass_filter_frequency', {lpf.ToString("F1", CultureInfo.InvariantCulture)})");
+        sb.AppendLine($"        props.set_editor_property('is_ui_sound', {isUI.ToString().ToLowerInvariant()})");
+        sb.AppendLine($"        props.set_editor_property('is_music', {isMusic.ToString().ToLowerInvariant()})");
+        if (!string.IsNullOrEmpty(defaultSubmix))
+        {
+            sb.AppendLine($"        submix = unreal.load_asset('{defaultSubmix}')");
+            sb.AppendLine("        if submix: props.set_editor_property('default_submix', submix)");
+        }
+        sb.AppendLine("        sc.set_editor_property('properties', props)");
+        if (!string.IsNullOrEmpty(parent))
+        {
+            sb.AppendLine($"        p = unreal.load_asset('{parent}')");
+            sb.AppendLine("        if p: sc.set_editor_property('parent_class', p)");
+        }
+        sb.AppendLine("        unreal.EditorAssetLibrary.save_loaded_asset(sc)");
+        sb.AppendLine($"        unreal.log(f'[UE4Decompiler] Configured SoundClass: {{asset_name}}')");
+        sb.AppendLine();
+        sb.AppendLine("if __name__ == '__main__':");
+        sb.AppendLine("    setup_sound_class()");
+        return sb.ToString();
+    }
+
+    private static string GenerateSoundSubmixPythonScript(string name, string virtualPath, string type, string? parent)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine($"# Reconstructed SoundSubmix: {name} ({type})");
+        sb.AppendLine($"# Source Package: {virtualPath}");
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine("import unreal");
+        sb.AppendLine();
+        sb.AppendLine("def setup_sound_submix():");
+        sb.AppendLine($"    asset_path = '{virtualPath.Replace('\\', '/')}'");
+        sb.AppendLine("    pkg_name = asset_path.rsplit('.', 1)[0]");
+        sb.AppendLine("    asset_name = pkg_name.rsplit('/', 1)[-1]");
+        sb.AppendLine("    pkg_path = pkg_name.rsplit('/', 1)[0]");
+        sb.AppendLine();
+        sb.AppendLine("    submix = unreal.load_asset(pkg_name)");
+        sb.AppendLine("    if not submix:");
+        sb.AppendLine("        asset_tools = unreal.AssetToolsHelpers.get_asset_tools()");
+        sb.AppendLine("        factory = unreal.SoundSubmixFactory()");
+        sb.AppendLine("        submix = asset_tools.create_asset(asset_name, pkg_path, unreal.SoundSubmix, factory)");
+        sb.AppendLine();
+        sb.AppendLine("    if submix:");
+        if (!string.IsNullOrEmpty(parent))
+        {
+            sb.AppendLine($"        p = unreal.load_asset('{parent}')");
+            sb.AppendLine("        if p: submix.set_editor_property('parent_submix', p)");
+        }
+        sb.AppendLine("        unreal.EditorAssetLibrary.save_loaded_asset(submix)");
+        sb.AppendLine($"        unreal.log(f'[UE4Decompiler] Configured SoundSubmix: {{asset_name}}')");
+        sb.AppendLine();
+        sb.AppendLine("if __name__ == '__main__':");
+        sb.AppendLine("    setup_sound_submix()");
+        return sb.ToString();
+    }
+
+    private static string GenerateSoundMixPythonScript(string name, string virtualPath, List<SoundClassAdjusterData> effects)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine($"# Reconstructed SoundMix: {name}");
+        sb.AppendLine($"# Source Package: {virtualPath}");
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine("import unreal");
+        sb.AppendLine();
+        sb.AppendLine("def setup_sound_mix():");
+        sb.AppendLine($"    asset_path = '{virtualPath.Replace('\\', '/')}'");
+        sb.AppendLine("    pkg_name = asset_path.rsplit('.', 1)[0]");
+        sb.AppendLine("    asset_name = pkg_name.rsplit('/', 1)[-1]");
+        sb.AppendLine("    pkg_path = pkg_name.rsplit('/', 1)[0]");
+        sb.AppendLine();
+        sb.AppendLine("    sm = unreal.load_asset(pkg_name)");
+        sb.AppendLine("    if not sm:");
+        sb.AppendLine("        asset_tools = unreal.AssetToolsHelpers.get_asset_tools()");
+        sb.AppendLine("        factory = unreal.SoundMixFactory()");
+        sb.AppendLine("        sm = asset_tools.create_asset(asset_name, pkg_path, unreal.SoundMix, factory)");
+        sb.AppendLine();
+        sb.AppendLine("    if sm:");
+        sb.AppendLine("        unreal.EditorAssetLibrary.save_loaded_asset(sm)");
+        sb.AppendLine($"        unreal.log(f'[UE4Decompiler] Configured SoundMix: {{asset_name}} ({effects.Count} adjusters)')");
+        sb.AppendLine();
+        sb.AppendLine("if __name__ == '__main__':");
+        sb.AppendLine("    setup_sound_mix()");
+        return sb.ToString();
+    }
+
     private static string SanitizePy(string name)
     {
         var sb = new StringBuilder();
@@ -394,4 +682,12 @@ public sealed class AudioReconstructor
         public float VolumeMax { get; set; }
         public string? AttenuationPath { get; set; }
     }
+
+    public sealed record SoundClassAdjusterData(
+        string? SoundClassPath,
+        float VolumeAdjuster,
+        float PitchAdjuster,
+        float LowPassFilterFrequency,
+        bool ApplyToChildren);
 }
+

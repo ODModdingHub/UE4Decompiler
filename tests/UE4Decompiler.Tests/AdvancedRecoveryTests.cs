@@ -261,4 +261,356 @@ public class AdvancedRecoveryTests : IDisposable
         Assert.Contains("SK_Hero_sockets.py", json);
         Assert.Contains("M_Metal_mic_setup.py", json);
     }
+
+    [Fact]
+    public void ProjectScaffold_GeneratesDefaultPhysics_PhysicalSurfaces()
+    {
+        var configDir = Path.Combine(_tempDir, "Config");
+        Directory.CreateDirectory(configDir);
+
+        var opts = new DecompileOptions
+        {
+            InputPath = _tempDir,
+            OutputRoot = _tempDir,
+            ProjectName = "TestGame",
+            Game = EGame.GAME_UE5_3,
+            EngineAssociation = "5.3"
+        };
+
+        var provider = new DefaultFileProvider(new DirectoryInfo(_tempDir), SearchOption.TopDirectoryOnly, false, new VersionContainer(EGame.GAME_UE5_3));
+        var scaffold = new ProjectScaffold(opts, provider);
+
+        var surfaces = new Dictionary<string, string>
+        {
+            ["SurfaceType1"] = "PM_Flesh",
+            ["SurfaceType2"] = "PM_Concrete",
+            ["SurfaceType3"] = "PM_Wood"
+        };
+        scaffold.WriteDefaultPhysics(surfaces);
+
+        var defaultEngine = Path.Combine(configDir, "DefaultEngine.ini");
+        Assert.True(File.Exists(defaultEngine));
+
+        var content = File.ReadAllText(defaultEngine);
+        Assert.Contains("[/Script/Engine.PhysicsSettings]", content);
+        Assert.Contains("+PhysicalSurfaces=(Type=SurfaceType1,Name=\"PM_Flesh\")", content);
+        Assert.Contains("+PhysicalSurfaces=(Type=SurfaceType2,Name=\"PM_Concrete\")", content);
+        Assert.Contains("+PhysicalSurfaces=(Type=SurfaceType3,Name=\"PM_Wood\")", content);
+    }
+
+    [Fact]
+    public void WidgetNodeData_ExtractsAndModelsCorrectly()
+    {
+        var node = new WidgetNodeData
+        {
+            Name = "StartGameBtn",
+            WidgetClass = "Button",
+            IsRoot = false,
+            IsVariable = true,
+            Visibility = "Visible",
+            Text = "Play Game",
+            SlotType = "CanvasPanelSlot",
+            Anchors = new[] { 0.5f, 0.5f, 0.5f, 0.5f },
+            Offsets = new[] { -100f, -25f, 200f, 50f },
+            ZOrder = 10,
+            AutoSize = false
+        };
+
+        var json = JsonSerializer.Serialize(node);
+        Assert.Contains("StartGameBtn", json);
+        Assert.Contains("Button", json);
+        Assert.Contains("Play Game", json);
+        Assert.Contains("CanvasPanelSlot", json);
+        Assert.Contains("0.5", json);
+        Assert.Contains("10", json);
+    }
+
+    [Fact]
+    public void DetailedPhysicsBodyData_ModelsCollisionPrimitives()
+    {
+        var body = new DetailedPhysicsBodyData
+        {
+            BodyName = "pelvis_Body",
+            BoneName = "pelvis",
+            PhysicsType = "Simulated"
+        };
+        body.Spheres.Add(new SphereElemData { Center = new[] { 0f, 0f, 0f }, Radius = 15f });
+        body.Boxes.Add(new BoxElemData { Center = new[] { 0f, 5f, 0f }, X = 20f, Y = 30f, Z = 20f });
+        body.Capsules.Add(new CapsuleElemData { Center = new[] { 0f, 0f, 10f }, Radius = 12f, Length = 25f });
+
+        var json = JsonSerializer.Serialize(body);
+        Assert.Contains("pelvis_Body", json);
+        Assert.Contains("pelvis", json);
+        Assert.Contains("Simulated", json);
+        Assert.Contains("15", json);
+        Assert.Contains("30", json);
+        Assert.Contains("25", json);
+    }
+
+    [Fact]
+    public void NiagaraAndCascade_ModelsSerializeParameters()
+    {
+        var niagara = new
+        {
+            AssetType = "NiagaraSystem",
+            Name = "NS_FireExplosion",
+            WarmupTime = 0.5f,
+            UserParameters = new[]
+            {
+                new NiagaraParamData { Name = "User.SpawnRate", TypeName = "Float" },
+                new NiagaraParamData { Name = "User.PrimaryColor", TypeName = "LinearColor" }
+            },
+            Emitters = new[]
+            {
+                new NiagaraEmitterData { Name = "Flames", SimTarget = "GPUSim", IsEnabled = true }
+            }
+        };
+
+        var json = JsonSerializer.Serialize(niagara);
+        Assert.Contains("NS_FireExplosion", json);
+        Assert.Contains("User.SpawnRate", json);
+        Assert.Contains("GPUSim", json);
+    }
+
+    [Fact]
+    public void FoliageType_ModelSerializesDensityAndCollision()
+    {
+        var foliage = new
+        {
+            AssetType = "FoliageType",
+            Name = "FT_OakTree",
+            Density = 150.0f,
+            Radius = 200.0f,
+            CastShadow = true,
+            CollisionProfile = "BlockAll"
+        };
+
+        var json = JsonSerializer.Serialize(foliage);
+        Assert.Contains("FT_OakTree", json);
+        Assert.Contains("150", json);
+        Assert.Contains("200", json);
+        Assert.Contains("BlockAll", json);
+    }
+
+    [Fact]
+    public void WidgetReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new WidgetReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "WBP_Test.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "WidgetBlueprint",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "WBP_Test"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Full, result.Fidelity);
+        Assert.True(File.Exists(Path.Combine(_tempDir, "WBP_Test_widget_tree.json")));
+        Assert.True(File.Exists(Path.Combine(_tempDir, "WBP_Test_widget_setup.py")));
+    }
+
+    [Fact]
+    public void PhysicsReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new PhysicsReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "PM_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "PhysicalMaterial",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "PM_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void ParticleReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new ParticleReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "NS_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "NiagaraSystem",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "NS_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void GameplayAbilityReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new GameplayAbilityReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "GE_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "GameplayEffect",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "GE_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void FoliageReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new FoliageReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "FT_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "FoliageType",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "FT_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void ProjectScaffold_GeneratesScalabilityAndDeviceProfiles()
+    {
+        var opts = new DecompileOptions
+        {
+            InputPath = _tempDir,
+            OutputRoot = _tempDir,
+            ProjectName = "TestGame",
+            Game = EGame.GAME_UE5_3,
+            EngineAssociation = "5.3"
+        };
+
+        var provider = new DefaultFileProvider(new DirectoryInfo(_tempDir), SearchOption.TopDirectoryOnly, false, new VersionContainer(EGame.GAME_UE5_3));
+        var scaffold = new ProjectScaffold(opts, provider);
+        scaffold.Generate();
+
+        var scalability = Path.Combine(_tempDir, "Config", "DefaultScalability.ini");
+        Assert.True(File.Exists(scalability));
+        var scalText = File.ReadAllText(scalability);
+        Assert.Contains("[ViewDistanceQuality@3]", scalText);
+        Assert.Contains("[ShadowQuality@3]", scalText);
+        Assert.Contains("[FoliageQuality@3]", scalText);
+
+        var deviceProfiles = Path.Combine(_tempDir, "Config", "DefaultDeviceProfiles.ini");
+        Assert.True(File.Exists(deviceProfiles));
+        var devText = File.ReadAllText(deviceProfiles);
+        Assert.Contains("[Windows DeviceProfile]", devText);
+    }
+
+    [Fact]
+    public void LandscapeReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new LandscapeReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "Landscape_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "Landscape",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "Landscape_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void SubsurfaceReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new SubsurfaceReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "SSP_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "SubsurfaceProfile",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "SSP_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void MediaReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new MediaReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "Media_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE4_21));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "MediaPlayer",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "Media_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
+
+    [Fact]
+    public void IKRigReconstructor_EmptyFallback_HandlesGracefully()
+    {
+        var recon = new IKRigReconstructor();
+        var testFilePath = Path.Combine(_tempDir, "IKR_Empty.uasset");
+        File.WriteAllBytes(testFilePath, Array.Empty<byte>());
+        var osFile = new CUE4Parse.FileProvider.Objects.OsGameFile(new DirectoryInfo(_tempDir), new FileInfo(testFilePath), "/Game", new VersionContainer(EGame.GAME_UE5_1));
+        var asset = new ParsedAsset
+        {
+            File = osFile,
+            Package = null!,
+            Exports = new List<CUE4Parse.UE4.Assets.Exports.UObject>(),
+            PrimaryType = "IKRigDefinition",
+            Imports = new List<string>()
+        };
+
+        var result = recon.Reconstruct(asset, Path.Combine(_tempDir, "IKR_Empty"));
+        Assert.NotNull(result);
+        Assert.Equal(Fidelity.Failed, result.Fidelity);
+    }
 }
+
+

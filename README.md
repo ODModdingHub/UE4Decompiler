@@ -18,8 +18,23 @@ UE4Decompiler restores packaged game archives (`.pak`, `.utoc/.ucas` IoStore con
   - **Modern CLI**: Rich command-line interface with subcommands (`inspect`, `scan`, `recover`, `export`, `graph`, `validate`, `doctor`, `capabilities`, `version`) and full backward compatibility with legacy flags.
   - **Avalonia Desktop GUI**: Dedicated desktop application featuring a container scanner, live asset browser with filters, real-time recovery progress queue, health diagnostics, and preferences.
 - **Model Context Protocol (MCP) Toolkit**:
-  - Built-in stdio MCP server (`ue4decompiler mcp`) supporting Claude Desktop, Cursor, and Antigravity.
-  - Interactive tools for container inspection, asset search, Blueprint bytecode decompilation, project recovery, and system diagnostics directly from AI developer environments.
+  - Built-in stdio MCP server (`ue4decompiler mcp`) with **34 autonomous AI tools** supporting Claude Desktop, Cursor, and Antigravity.
+  - Interactive tools for container inspection, asset search, Blueprint bytecode decompilation, project recovery, UMG widgets, physics assets, Niagara/Cascade VFX, Gameplay Ability System (GAS), foliage, terrains/landscapes, subsurface scattering, media framework, audio routing graphs, level streaming manifests, and IK rigs.
+- **Deep Asset Reconstructors & Pipeline Recovery**:
+  - **Landscapes & Terrains**: `ALandscape`, `ALandscapeStreamingProxy`, `ULandscapeComponent` grid layout recovery (section quads, subsections), heightmap textures, weightmap layer blend allocations, and `ULandscapeLayerInfoObject` configuration.
+  - **Subsurface Scattering Profiles**: `USubsurfaceProfile` optical recovery (scatter radius, falloff, boundary color bleed, extinction, dual specular roughness, Burley diffusion).
+  - **Media Framework**: `UFileMediaSource`, `UStreamMediaSource`, `UMediaPlayer`, `UMediaTexture` video paths, playback settings, and material bindings.
+  - **Comprehensive Audio Routing**: `USoundWave` PCM decoding, `USoundCue` node graphs, `USoundAttenuation` distance models, `USoundClass` volume/pitch/LPF hierarchies, `USoundSubmix` effect chains, and `USoundMix` ducking matrices.
+  - **Level Streaming & World Partition**: Sublevel manifests, transforms, initial load/visibility flags, and data layer references.
+  - **IK Rig & Animation Retargeting**: UE5 `UIKRigDefinition` bone chains and solver goals; `UIKRetargeter` asset mapping.
+  - **Engine Scalability & Configuration**: Scaffolds `DefaultScalability.ini`, `DefaultDeviceProfiles.ini`, `DefaultGameplayTags.ini`, and `DefaultEngine.ini` collision/physics surfaces.
+  - **UMG Widget Blueprints & WidgetTrees**: Hierarchical UI layout recovery, slot geometry (canvas anchors/offsets), styling, fonts, and C++ `UPROPERTY(meta = (BindWidget))` scaffolding.
+  - **Physics & Ragdoll Assets**: Deep `UPhysicsAsset` skeletal collision bodies (spheres/boxes/capsules/convex) and joint constraints; `UPhysicalMaterial` with automated `DefaultEngine.ini` physical surface scaffolding.
+  - **Niagara & Cascade VFX**: Reconstructs `UNiagaraSystem` user parameters, emitters, simulation targets, and renderers; legacy `UParticleSystem` modules.
+  - **Gameplay Ability System (GAS)**: `UAttributeSet` attribute discovery with compilable C++ `ATTRIBUTE_ACCESSORS` stubs; `UGameplayEffect` and `UGameplayAbility` recovery.
+  - **Foliage & Environment**: `UFoliageType` mesh bindings, density, radius, scaling rules, and collision profiles.
+  - **Animation & Skeletal Meshes**: Skeletons, animation sequences, montages, blend spaces, and sockets.
+  - **Level & World Lighting**: BuiltData registry, lighting profiles, and master Python batch runner (`ReconstructAllLevels.py`).
 - **Unreal Engine 4 & 5 Parity**:
   - Full support for traditional `.pak` containers and modern UE5 IoStore (`.utoc/.ucas`) Zen containers.
   - Unversioned property schema restoration via `.usmap` mapping files.
@@ -131,7 +146,7 @@ UE4Decompiler/
 │   ├── UE4Decompiler.Cli/           # Spectre.Console CLI application & subcommands
 │   └── UE4Decompiler.Gui/           # Cross-platform Avalonia UI Desktop application
 ├── tests/
-│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite (90 tests)
+│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite (100 tests)
 ├── lib/                             # Direct CUE4Parse and native decoding assemblies
 ├── docs/                            # Comprehensive documentation suite
 │   ├── getting-started.md           # Quickstart and setup guide

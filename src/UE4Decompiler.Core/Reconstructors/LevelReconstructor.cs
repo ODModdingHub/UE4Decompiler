@@ -46,11 +46,48 @@ public sealed class LevelReconstructor
             }
 
             var streaming = new List<string?>();
+            var streamingLevels = new List<StreamingSublevelData>();
             if (world?.StreamingLevels is { } sls)
             {
                 foreach (var s in sls)
+                {
                     if (s.TryLoad(out var sl) && sl is not null)
-                        streaming.Add(sl.GetOrDefault<FSoftObjectPath>("WorldAsset").ToString() ?? sl.Name);
+                    {
+                        var assetPath = sl.GetOrDefault<FSoftObjectPath>("WorldAsset").ToString();
+                        var pkgName = sl.GetOrDefault<FName>("PackageNameToLoad").Text;
+                        if (string.IsNullOrEmpty(pkgName)) pkgName = Path.GetFileNameWithoutExtension(assetPath ?? sl.Name);
+                        streaming.Add(assetPath ?? sl.Name);
+
+                        var trans = sl.GetOrDefault<FTransform>("LevelTransform");
+                        var isInitiallyLoaded = sl.GetOrDefault<bool>("bInitiallyLoaded", true);
+                        var visible = sl.GetOrDefault<bool>("bInitiallyVisible", true);
+                        var block = sl.GetOrDefault<bool>("bShouldBlockOnLoad", false);
+                        var priority = sl.GetOrDefault<int>("StreamingPriority", 0);
+
+                        var rot = trans.Rotation.Rotator();
+                        streamingLevels.Add(new StreamingSublevelData
+                        {
+                            PackageName = pkgName,
+                            WorldAssetPath = assetPath,
+                            Location = new[] { (float)trans.Translation.X, (float)trans.Translation.Y, (float)trans.Translation.Z },
+                            Rotation = new[] { (float)rot.Pitch, (float)rot.Yaw, (float)rot.Roll },
+                            Scale = new[] { (float)trans.Scale3D.X, (float)trans.Scale3D.Y, (float)trans.Scale3D.Z },
+                            InitiallyLoaded = isInitiallyLoaded,
+                            InitiallyVisible = visible,
+                            ShouldBlockOnLoad = block,
+                            StreamingPriority = priority
+                        });
+                    }
+                }
+            }
+
+            var dataLayers = new List<string>();
+            foreach (var exp in asset.Exports)
+            {
+                if (exp.ExportType.Contains("DataLayer", StringComparison.OrdinalIgnoreCase))
+                {
+                    dataLayers.Add(exp.Name);
+                }
             }
 
             // Extract all placed actors and lighting environment
@@ -102,9 +139,25 @@ public sealed class LevelReconstructor
             File.WriteAllText(lightingJsonPath, JsonSerializer.Serialize(lightingModel, jsonOptions));
             sidecars.Add(lightingJsonPath);
 
-            // 2. Emit automated Unreal Editor Python reconstruction script
+            // 2. Emit streaming sublevels JSON if present
+            if (streamingLevels.Count > 0 || dataLayers.Count > 0)
+            {
+                var streamingJsonPath = outputPathNoExt + "_streaming.json";
+                var streamingModel = new
+                {
+                    MapName = mapName,
+                    VirtualPath = asset.File.Path,
+                    TotalStreamingLevels = streamingLevels.Count,
+                    DataLayers = dataLayers,
+                    StreamingLevels = streamingLevels
+                };
+                File.WriteAllText(streamingJsonPath, JsonSerializer.Serialize(streamingModel, jsonOptions));
+                sidecars.Add(streamingJsonPath);
+            }
+
+            // 3. Emit automated Unreal Editor Python reconstruction script
             var pythonScriptPath = outputPathNoExt + "_reconstruct.py";
-            var pyScript = GenerateUnrealPythonScript(mapName, asset.File.Path, lighting, actors);
+            var pyScript = GenerateUnrealPythonScript(mapName, asset.File.Path, lighting, actors, streamingLevels);
             File.WriteAllText(pythonScriptPath, pyScript, Encoding.UTF8);
             sidecars.Add(pythonScriptPath);
 
@@ -426,7 +479,7 @@ public sealed class LevelReconstructor
         }
     }
 
-    private static string GenerateUnrealPythonScript(string mapName, string virtualPath, LevelLightingEnvironment lighting, List<LevelActorData> actors)
+    private static string GenerateUnrealPythonScript(string mapName, string virtualPath, LevelLightingEnvironment lighting, List<LevelActorData> actors, List<StreamingSublevelData> streamingLevels)
     {
         var sb = new StringBuilder();
         sb.AppendLine("# ===========================================================================");
@@ -738,6 +791,26 @@ public sealed class LevelReconstructor
             sb.AppendLine();
         }
 
+        // 11. Streaming Sublevels
+        if (streamingLevels.Count > 0)
+        {
+            sb.AppendLine("    # -------------------------------------------------------------");
+            sb.AppendLine("    # 11. Streaming Sublevels & World Composition");
+            sb.AppendLine("    # -------------------------------------------------------------");
+            sb.AppendLine("    world = unreal.EditorLevelLibrary.get_editor_world()");
+            sb.AppendLine("    if world:");
+            foreach (var sl in streamingLevels)
+            {
+                var pkg = sl.WorldAssetPath ?? sl.PackageName;
+                sb.AppendLine("        try:");
+                sb.AppendLine($"            unreal.EditorLevelUtils.add_level_to_world(world, '{pkg}', unreal.LevelStreamingDynamic)");
+                sb.AppendLine($"            unreal.log('Attached streaming sublevel: {sl.PackageName}')");
+                sb.AppendLine("        except Exception as ex:");
+                sb.AppendLine($"            unreal.log_warning(f'Failed attaching sublevel {sl.PackageName}: {{ex}}')");
+            }
+            sb.AppendLine();
+        }
+
         sb.AppendLine($"    unreal.log('>>> [UE4Decompiler] Level reconstruction complete for: {mapName}')");
         sb.AppendLine();
         sb.AppendLine("if __name__ == '__main__':");
@@ -974,4 +1047,18 @@ public sealed class CameraActorData
     public float FieldOfView { get; set; } = 90f;
     public float AspectRatio { get; set; } = 1.777778f;
 }
+
+public sealed class StreamingSublevelData
+{
+    public string PackageName { get; set; } = "";
+    public string? WorldAssetPath { get; set; }
+    public float[] Location { get; set; } = { 0, 0, 0 };
+    public float[] Rotation { get; set; } = { 0, 0, 0 };
+    public float[] Scale { get; set; } = { 1, 1, 1 };
+    public bool InitiallyLoaded { get; set; } = true;
+    public bool InitiallyVisible { get; set; } = true;
+    public bool ShouldBlockOnLoad { get; set; }
+    public int StreamingPriority { get; set; }
+}
+
 

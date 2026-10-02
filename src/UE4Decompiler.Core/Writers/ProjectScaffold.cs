@@ -40,6 +40,8 @@ public sealed class ProjectScaffold
             WriteDefaultGame();
             WriteDefaultEditor();
             WriteDefaultInput();
+            WriteDefaultScalability();
+            WriteDefaultDeviceProfiles();
         }
         WriteMasterPythonScript();
         Log.Information("Scaffolded project {Name} (engine {Assoc}) at {Root} [uproject={U}, configs={C}]",
@@ -259,6 +261,58 @@ public sealed class ProjectScaffold
         Write("DefaultEditor.ini", sb.ToString());
     }
 
+    private void WriteDefaultScalability()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("[ViewDistanceQuality@3]");
+        sb.AppendLine("r.ViewDistanceScale=1.0");
+        sb.AppendLine();
+        sb.AppendLine("[AntiAliasingQuality@3]");
+        sb.AppendLine("r.PostProcessAAQuality=4");
+        sb.AppendLine();
+        sb.AppendLine("[ShadowQuality@3]");
+        sb.AppendLine("r.LightFunctionQuality=1");
+        sb.AppendLine("r.ShadowQuality=5");
+        sb.AppendLine("r.Shadow.CSM.MaxCascades=10");
+        sb.AppendLine("r.Shadow.MaxResolution=2048");
+        sb.AppendLine();
+        sb.AppendLine("[PostProcessQuality@3]");
+        sb.AppendLine("r.MotionBlurQuality=4");
+        sb.AppendLine("r.AmbientOcclusionLevels=3");
+        sb.AppendLine("r.BloomQuality=5");
+        sb.AppendLine();
+        sb.AppendLine("[TextureQuality@3]");
+        sb.AppendLine("r.Streaming.MipBias=0");
+        sb.AppendLine("r.MaxAnisotropy=8");
+        sb.AppendLine();
+        sb.AppendLine("[EffectsQuality@3]");
+        sb.AppendLine("r.TranslucencyLightingVolumeDim=64");
+        sb.AppendLine("r.RefractionQuality=2");
+        sb.AppendLine();
+        sb.AppendLine("[FoliageQuality@3]");
+        sb.AppendLine("foliage.DensityScale=1.0");
+        sb.AppendLine("grass.DensityScale=1.0");
+        sb.AppendLine();
+        sb.AppendLine("[ShadingQuality@3]");
+        sb.AppendLine("r.HairStrands.SkyLighting.SampleCount=4");
+        Write("DefaultScalability.ini", sb.ToString());
+    }
+
+    private void WriteDefaultDeviceProfiles()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("[Windows DeviceProfile]");
+        sb.AppendLine("DeviceType=Windows");
+        sb.AppendLine("BaseProfileName=");
+        sb.AppendLine("+CVars=r.NormalMapsForStaticLighting=1");
+        sb.AppendLine();
+        sb.AppendLine("[Mac DeviceProfile]");
+        sb.AppendLine("DeviceType=Mac");
+        sb.AppendLine("BaseProfileName=");
+        sb.AppendLine("+CVars=r.NormalMapsForStaticLighting=1");
+        Write("DefaultDeviceProfiles.ini", sb.ToString());
+    }
+
     public void WriteDefaultGameplayTags(IEnumerable<string> tags)
     {
         var tagList = tags.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t).ToList();
@@ -304,13 +358,36 @@ public sealed class ProjectScaffold
         Log.Information("Appended {Profiles} collision profile(s) and {Channels} channel(s) to DefaultEngine.ini", profileList.Count, channelList.Count);
     }
 
+    public void WriteDefaultPhysics(IEnumerable<KeyValuePair<string, string>> surfaces)
+    {
+        var surfaceList = surfaces.ToList();
+        if (surfaceList.Count == 0) return;
+
+        var defaultEnginePath = Path.Combine(_opts.OutputRoot, "Config", "DefaultEngine.ini");
+        var sb = new StringBuilder();
+        if (File.Exists(defaultEnginePath))
+            sb.Append(File.ReadAllText(defaultEnginePath));
+        else
+            sb.AppendLine("[/Script/Engine.PhysicsSettings]");
+
+        sb.AppendLine();
+        sb.AppendLine("[/Script/Engine.PhysicsSettings]");
+        foreach (var s in surfaceList)
+        {
+            var name = Path.GetFileNameWithoutExtension(s.Value);
+            sb.AppendLine($"+PhysicalSurfaces=(Type={s.Key},Name=\"{name}\")");
+        }
+        File.WriteAllText(defaultEnginePath, sb.ToString());
+        Log.Information("Appended {Count} physical surface type(s) to DefaultEngine.ini", surfaceList.Count);
+    }
+
     private void WriteMasterPythonScript()
     {
         var sb = new StringBuilder();
         sb.AppendLine("# ===========================================================================");
         sb.AppendLine("# UE4Decompiler Master Batch Reconstruction Runner");
-        sb.AppendLine("# Executes all level, skeletal socket, material instance, sound cue, and");
-        sb.AppendLine("# curve reconstruction scripts in batch.");
+        sb.AppendLine("# Executes all level, skeletal socket, material instance, sound cue,");
+        sb.AppendLine("# widget, physics, particle, foliage, landscape, subsurface, media, audio, and IK rig reconstruction scripts in batch.");
         sb.AppendLine("# Run via Unreal Editor Output Log (Python):");
         sb.AppendLine("#     py \"Scripts/ReconstructAllLevels.py\"");
         sb.AppendLine("# ===========================================================================");
@@ -321,7 +398,7 @@ public sealed class ProjectScaffold
         sb.AppendLine("    content_dir = os.path.join(proj_dir, 'Content')");
         sb.AppendLine("    unreal.log(f'>>> [UE4Decompiler] Scanning {content_dir} for reconstruction scripts...')");
         sb.AppendLine("    count = 0");
-        sb.AppendLine("    suffixes = ('_reconstruct.py', '_sockets.py', '_mic_setup.py', '_soundcue.py', '_attenuation.py', '_setup.py')");
+        sb.AppendLine("    suffixes = ('_reconstruct.py', '_sockets.py', '_mic_setup.py', '_soundcue.py', '_attenuation.py', '_soundclass.py', '_soundsubmix.py', '_soundmix.py', '_widget_setup.py', '_physmat_setup.py', '_physics_setup.py', '_niagara_setup.py', '_cascade_setup.py', '_foliage_setup.py', '_landscape_setup.py', '_layerinfo_setup.py', '_subsurface_setup.py', '_media_setup.py', '_ikrig_setup.py', '_setup.py')");
         sb.AppendLine("    for root, dirs, files in os.walk(content_dir):");
         sb.AppendLine("        for f in files:");
         sb.AppendLine("            if f.endswith(suffixes):");

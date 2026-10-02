@@ -378,11 +378,31 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
         var baseClass = badge switch
         {
             "Blueprint" => "AActor",
+            "WidgetBlueprint" => "UUserWidget",
+            "PhysicalMaterial" => "UPhysicalMaterial",
+            "PhysicsAsset" => "UPhysicsAsset",
+            "NiagaraSystem" => "UNiagaraSystem",
+            "ParticleSystem" => "UParticleSystem",
+            "AttributeSet" => "UAttributeSet",
+            "GameplayEffect" => "UGameplayEffect",
+            "GameplayAbility" => "UGameplayAbility",
+            "FoliageType" => "UFoliageType_InstancedStaticMesh",
+            "Landscape" or "LandscapeProxy" => "ALandscapeProxy",
+            "LandscapeLayerInfoObject" => "ULandscapeLayerInfoObject",
+            "SubsurfaceProfile" => "USubsurfaceProfile",
+            "FileMediaSource" or "StreamMediaSource" => "UMediaSource",
+            "MediaPlayer" => "UMediaPlayer",
+            "MediaTexture" => "UMediaTexture",
+            "SoundClass" => "USoundClass",
+            "SoundSubmix" => "USoundSubmix",
+            "SoundMix" => "USoundMix",
+            "IKRigDefinition" => "UIKRigDefinition",
+            "IKRetargeter" => "UIKRetargeter",
             "StaticMesh" => "UStaticMesh",
             "SkeletalMesh" => "USkeletalMesh",
             "Material" => "UMaterialInterface",
             "SoundWave" => "USoundWave",
-            "World" => "AWorldSettings",
+            "World" or "World Map" => "AWorldSettings",
             _ => "UObject"
         };
         var prefix = baseClass.StartsWith("A") ? "A" : "U";
@@ -393,6 +413,8 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
         sb.AppendLine();
         sb.AppendLine("#include \"CoreMinimal.h\"");
         if (baseClass == "AActor") sb.AppendLine("#include \"GameFramework/Actor.h\"");
+        else if (baseClass == "UUserWidget") sb.AppendLine("#include \"Blueprint/UserWidget.h\"");
+        else if (baseClass == "UAttributeSet") { sb.AppendLine("#include \"AttributeSet.h\""); sb.AppendLine("#include \"AbilitySystemComponent.h\""); }
         else sb.AppendLine($"#include \"Engine/{baseClass.TrimStart('U', 'A')}.h\"");
         sb.AppendLine($"#include \"{rawName}.generated.h\"");
         sb.AppendLine();
@@ -418,6 +440,16 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
             sb.AppendLine();
             sb.AppendLine("    UFUNCTION(BlueprintCallable, Category = \"Gameplay\")");
             sb.AppendLine("    void ReceiveTick(float DeltaSeconds);");
+        }
+        else if (badge == "WidgetBlueprint")
+        {
+            sb.AppendLine("    UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))");
+            sb.AppendLine("    class UWidget* RootCanvas;");
+        }
+        else if (badge == "AttributeSet")
+        {
+            sb.AppendLine("    UPROPERTY(BlueprintReadOnly, Category = \"Attributes\")");
+            sb.AppendLine("    FGameplayAttributeData Health;");
         }
         else if (badge == "Material")
         {
@@ -551,6 +583,25 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
         if (vp.Contains("AnimSequence", StringComparison.OrdinalIgnoreCase) || vp.Contains("/AS_", StringComparison.OrdinalIgnoreCase) || vp.Contains("Montage", StringComparison.OrdinalIgnoreCase)) return "AnimSequence";
         if (vp.Contains("InputAction", StringComparison.OrdinalIgnoreCase) || vp.Contains("/IA_", StringComparison.OrdinalIgnoreCase)) return "InputAction";
         if (vp.Contains("InputMappingContext", StringComparison.OrdinalIgnoreCase) || vp.Contains("/IMC_", StringComparison.OrdinalIgnoreCase)) return "InputMappingContext";
+        if (vp.Contains("Widget", StringComparison.OrdinalIgnoreCase) || vp.Contains("/WBP_", StringComparison.OrdinalIgnoreCase)) return "WidgetBlueprint";
+        if (vp.Contains("PhysMat", StringComparison.OrdinalIgnoreCase) || vp.Contains("PhysicalMaterial", StringComparison.OrdinalIgnoreCase) || vp.Contains("/PM_", StringComparison.OrdinalIgnoreCase)) return "PhysicalMaterial";
+        if (vp.Contains("PhysicsAsset", StringComparison.OrdinalIgnoreCase) || vp.Contains("/PHYS_", StringComparison.OrdinalIgnoreCase)) return "PhysicsAsset";
+        if (vp.Contains("Niagara", StringComparison.OrdinalIgnoreCase) || vp.Contains("/NS_", StringComparison.OrdinalIgnoreCase) || vp.Contains("/NE_", StringComparison.OrdinalIgnoreCase)) return "NiagaraSystem";
+        if (vp.Contains("Particle", StringComparison.OrdinalIgnoreCase) || vp.Contains("/PS_", StringComparison.OrdinalIgnoreCase)) return "ParticleSystem";
+        if (vp.Contains("AttributeSet", StringComparison.OrdinalIgnoreCase)) return "AttributeSet";
+        if (vp.Contains("GameplayEffect", StringComparison.OrdinalIgnoreCase) || vp.Contains("/GE_", StringComparison.OrdinalIgnoreCase)) return "GameplayEffect";
+        if (vp.Contains("GameplayAbility", StringComparison.OrdinalIgnoreCase) || vp.Contains("/GA_", StringComparison.OrdinalIgnoreCase)) return "GameplayAbility";
+        if (vp.Contains("Foliage", StringComparison.OrdinalIgnoreCase) || vp.Contains("/FT_", StringComparison.OrdinalIgnoreCase)) return "FoliageType";
+        if (vp.Contains("Landscape", StringComparison.OrdinalIgnoreCase)) return "Landscape";
+        if (vp.Contains("Subsurface", StringComparison.OrdinalIgnoreCase) || vp.Contains("/SSP_", StringComparison.OrdinalIgnoreCase)) return "SubsurfaceProfile";
+        if (vp.Contains("MediaSource", StringComparison.OrdinalIgnoreCase) || vp.Contains("/MS_", StringComparison.OrdinalIgnoreCase)) return "FileMediaSource";
+        if (vp.Contains("MediaPlayer", StringComparison.OrdinalIgnoreCase) || vp.Contains("/MP_", StringComparison.OrdinalIgnoreCase)) return "MediaPlayer";
+        if (vp.Contains("MediaTexture", StringComparison.OrdinalIgnoreCase) || vp.Contains("/MT_", StringComparison.OrdinalIgnoreCase)) return "MediaTexture";
+        if (vp.Contains("SoundClass", StringComparison.OrdinalIgnoreCase)) return "SoundClass";
+        if (vp.Contains("SoundSubmix", StringComparison.OrdinalIgnoreCase) || vp.Contains("Submix", StringComparison.OrdinalIgnoreCase)) return "SoundSubmix";
+        if (vp.Contains("SoundMix", StringComparison.OrdinalIgnoreCase)) return "SoundMix";
+        if (vp.Contains("IKRig", StringComparison.OrdinalIgnoreCase) || vp.Contains("/IKR_", StringComparison.OrdinalIgnoreCase)) return "IKRigDefinition";
+        if (vp.Contains("IKRetarget", StringComparison.OrdinalIgnoreCase) || vp.Contains("/RTG_", StringComparison.OrdinalIgnoreCase)) return "IKRetargeter";
         if (vp.Contains("Texture", StringComparison.OrdinalIgnoreCase) || a.Extension.Equals("png", StringComparison.OrdinalIgnoreCase)) return "Texture2D";
         if (vp.Contains("Material", StringComparison.OrdinalIgnoreCase)) return "Material";
         if (vp.Contains("SkeletalMesh", StringComparison.OrdinalIgnoreCase)) return "SkeletalMesh";
