@@ -107,6 +107,21 @@ ue4decompiler graph ./Game/Content/Paks /Game/Characters/BP_Hero --format mermai
 
 ---
 
+## Release Automation & CI/CD
+
+UE4Decompiler features an end-to-end automated release pipeline:
+
+- **Changelog Generator**: Run `./scripts/generate-changelog.sh` to automatically parse git history into Conventional Commit categories (Features, Fixes, Performance, Refactoring, Docs).
+- **Release Automation**:
+  - Bash (macOS/Linux): `./scripts/release.sh [version] [--dry-run] [--all-platforms] [--no-build]`
+  - PowerShell (Windows): `.\scripts\release.ps1 [-Version <ver>] [-DryRun] [-AllPlatforms] [-NoBuild]`
+- **GitHub Actions (`release.yml`)**:
+  - Automatically triggered upon pushing tags matching `v*` (e.g., `git push origin v2.0.0`).
+  - Cross-compiles single-file CLI and GUI packages for **Windows x64**, **Linux x64**, **macOS Apple Silicon (arm64)**, and **macOS Intel (x64)**.
+  - Automatically calculates SHA-256 checksums, formats the release notes from git history, and publishes the release with binaries attached.
+
+---
+
 ## Repository Structure
 
 ```
@@ -116,7 +131,7 @@ UE4Decompiler/
 │   ├── UE4Decompiler.Cli/           # Spectre.Console CLI application & subcommands
 │   └── UE4Decompiler.Gui/           # Cross-platform Avalonia UI Desktop application
 ├── tests/
-│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite (71+ tests)
+│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite (90 tests)
 ├── lib/                             # Direct CUE4Parse and native decoding assemblies
 ├── docs/                            # Comprehensive documentation suite
 │   ├── getting-started.md           # Quickstart and setup guide
@@ -131,8 +146,8 @@ UE4Decompiler/
 │   ├── recovery.md                  # Full recovery lifecycle
 │   ├── troubleshooting.md           # Common issues, FAQ, and solutions
 │   └── architecture/                # System architecture and security model
-├── scripts/                         # Build and test scripts (bash and PowerShell)
-├── .github/workflows/               # GitHub Actions CI workflow
+├── scripts/                         # Build, test, changelog, and release automation scripts
+├── .github/workflows/               # GitHub Actions CI & multi-platform Release workflows
 ├── CONTRIBUTING.md                  # Contribution guidelines
 ├── CODE_OF_CONDUCT.md              # Contributor Covenant Code of Conduct
 └── SECURITY.md                      # Security vulnerability reporting policy

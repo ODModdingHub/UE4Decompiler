@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 2.0.0 or v2.0.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            archive_ext: zip
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive_ext: tar.gz
+          - os: macos-latest
+            rid: osx-arm64
+            archive_ext: tar.gz
+          - os: macos-13
+            rid: osx-x64
+            archive_ext: tar.gz
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Determine Tag
+        run: |
+          TAG="${{ github.event.inputs.version }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          if [[ ! "$TAG" =~ ^v ]]; then
+            TAG="v$TAG"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Publish UE4Decompiler.Cli
+        run: |
+          dotnet publish src/UE4Decompiler.Cli/UE4Decompiler.Cli.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -o "dist/${{ matrix.rid }}/cli"
+
+      - name: Publish UE4Decompiler.Gui
+        run: |
+          dotnet publish src/UE4Decompiler.Gui/UE4Decompiler.Gui.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -o "dist/${{ matrix.rid }}/gui"
+
+      - name: Package Archives
+        run: |
+          mkdir -p dist/packages
+          CLI_NAME="UE4Decompiler-${TAG}-${{ matrix.rid }}-cli"
+          GUI_NAME="UE4Decompiler-${TAG}-${{ matrix.rid }}-gui"
+
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            if command -v 7z &>/dev/null; then
+              (cd "dist/${{ matrix.rid }}/cli" && 7z a -r -q "../../packages/${CLI_NAME}.zip" .)
+              (cd "dist/${{ matrix.rid }}/gui" && 7z a -r -q "../../packages/${GUI_NAME}.zip" .)
+            elif command -v zip &>/dev/null; then
+              (cd "dist/${{ matrix.rid }}/cli" && zip -r -q "../../packages/${CLI_NAME}.zip" .)
+              (cd "dist/${{ matrix.rid }}/gui" && zip -r -q "../../packages/${GUI_NAME}.zip" .)
+            else
+              tar -czf "dist/packages/${CLI_NAME}.tar.gz" -C "dist/${{ matrix.rid }}/cli" .
+              tar -czf "dist/packages/${GUI_NAME}.tar.gz" -C "dist/${{ matrix.rid }}/gui" .
+            fi
+          else
+            tar -czf "dist/packages/${CLI_NAME}.tar.gz" -C "dist/${{ matrix.rid }}/cli" .
+            tar -czf "dist/packages/${GUI_NAME}.tar.gz" -C "dist/${{ matrix.rid }}/gui" .
+          fi
+
+      - name: Upload Platform Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.rid }}
+          path: dist/packages/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Tag and Version
+        run: |
+          TAG="${{ github.event.inputs.version }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          if [[ ! "$TAG" =~ ^v ]]; then
+            TAG="v$TAG"
+          fi
+          VERSION="${TAG#v}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate Checksums
+        run: |
+          cd release-assets
+          rm -f checksums.sha256
+          sha256sum * > checksums.sha256
+          echo "==> Generated Checksums:"
+          cat checksums.sha256
+
+      - name: Generate Changelog
+        run: |
+          chmod +x scripts/generate-changelog.sh
+          ./scripts/generate-changelog.sh "$VERSION" RELEASE_NOTES.md
+          echo "==> Generated Release Notes:"
+          cat RELEASE_NOTES.md
+
+      - name: Publish Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: UE4Decompiler ${{ env.TAG }}
+          body_path: RELEASE_NOTES.md
+          files: release-assets/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
