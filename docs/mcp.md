@@ -127,13 +127,60 @@ Execute full asset recovery from Unreal Engine containers into an uncooked Unrea
   - `mappingPath` (string, optional): Optional `.usmap` unversioned property mapping file.
   - `emitStubs` (boolean, optional): Generate compilable C++ stub modules for game native classes.
 
+### `ue_diff_containers`
+Compare two Unreal Engine containers or patch builds to identify added, removed, modified, or resized assets.
+
+- **Parameters:**
+  - `containerA` (string, required): Base container file or paks folder (e.g. Patch 1.0).
+  - `containerB` (string, required): New container file or paks folder to compare against (e.g. Patch 1.1).
+  - `engineA` (string, optional): Engine version hint for container A.
+  - `engineB` (string, optional): Engine version hint for container B.
+  - `aesKeyA` (string, optional): AES key for container A.
+  - `aesKeyB` (string, optional): AES key for container B.
+
+### `ue_batch_export`
+Batch export uncooked assets (Textures to PNG, Static/Skeletal Meshes to glTF, SoundWave to WAV/OGG, Blueprints to pseudo-C++) directly to disk.
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to container (.pak, .utoc) or paks folder.
+  - `exportDirectory` (string, required): Destination directory on disk where exported files will be written.
+  - `filter` (string, optional): Path filter or wildcard (e.g. `Textures/UI`, `*Hero*`).
+  - `engineVersion` (string, optional): Engine version hint (e.g. `4.27`, `5.3`, `5.4`, `5.5`).
+  - `aesKey` (string, optional): AES key.
+
+### `ue_extract_metadata`
+Extract detailed package metadata, UObject export table, import dependencies, and serialized property tags as JSON.
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to container (.pak, .utoc) or paks folder.
+  - `assetPath` (string, required): Virtual package path (e.g. `/Game/Characters/BP_Player`).
+  - `engineVersion` (string, optional): Engine version hint.
+  - `aesKey` (string, optional): AES key.
+
+### `ue_generate_cpp_headers`
+Reconstruct native C++ module headers (`UCLASS`, `USTRUCT`, `UENUM`) from cooked packages with `UPROPERTY` and `UFUNCTION` signatures for compiling in Visual Studio / Rider / Xcode.
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to container or paks folder.
+  - `outputDirectory` (string, required): Destination directory for C++ header files.
+  - `moduleName` (string, optional): Module name (default: `RecoveredGame`).
+  - `engineVersion` (string, optional): Engine version hint.
+  - `aesKey` (string, optional): AES key.
+
+### `ue_iostore_info`
+Inspect Unreal Engine 5 Zen Store and IoStore (`.utoc`/`.ucas`) container headers, compression blocks, chunk metadata, and encryption flags.
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to `.utoc`, `.ucas`, or IoStore container file.
+  - `aesKey` (string, optional): AES key.
+
 ### `ue_diagnose`
 Run system diagnostics on .NET runtime, native compression codecs, AES decryption keys, and engine mappings.
 
 - **Parameters:** None.
 
 ### `ue_capabilities`
-Return the complete Unreal Engine version and asset format recovery capability matrix in structured JSON format.
+Return the complete Unreal Engine version (UE 4.18 through UE 5.5) and asset format recovery capability matrix in structured JSON format.
 
 - **Parameters:** None.
 

@@ -62,7 +62,8 @@ public static class VersionDetector
         if (ue5 > 0)
         {
             EGame guess;
-            if (ue5 >= (int)EUnrealEngineObjectUE5Version.DATA_RESOURCES) guess = EGame.GAME_UE5_3;
+            if (ue5 >= (int)EUnrealEngineObjectUE5Version.PROPERTY_TAG_COMPLETE_TYPE_NAME) guess = EGame.GAME_UE5_4;
+            else if (ue5 >= (int)EUnrealEngineObjectUE5Version.DATA_RESOURCES) guess = EGame.GAME_UE5_3;
             else if (ue5 >= (int)EUnrealEngineObjectUE5Version.LARGE_WORLD_COORDINATES) guess = EGame.GAME_UE5_0;
             else guess = EGame.GAME_UE5_0;
             Log.Information("Detected UE5 package (UE5 obj version {Ue5}) -> {Game}", ue5, guess);

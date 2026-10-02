@@ -1,9 +1,18 @@
 using System.Text.Json;
+using CUE4Parse.UE4.Assets.Exports.StaticMesh;
+using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UE4.Versions;
+using CUE4Parse_Conversion;
+using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Textures;
+using SkiaSharp;
 using UE4Decompiler.Core.Abstractions;
 using UE4Decompiler.Core.Models;
 using UE4Decompiler.Core.Services;
 using UE4Decompiler.Core.Utils;
+using UE4Decompiler.Output;
+using UE4Decompiler.Output.Stubs;
+using UE4Decompiler.Utils;
 
 namespace UE4Decompiler.Core.Mcp;
 
@@ -31,7 +40,7 @@ public sealed class McpToolRegistry
                     {
                         path = new { type = "string", description = "Absolute or relative path to the container file (.pak, .utoc) or cooked Content folder." },
                         aesKey = new { type = "string", description = "Optional 256-bit hexadecimal AES decryption key (with or without 0x prefix)." },
-                        engineVersion = new { type = "string", description = "Optional Unreal Engine version hint (e.g. '4.21', '4.27', '5.1', '5.3')." }
+                        engineVersion = new { type = "string", description = "Optional Unreal Engine version hint (e.g. '4.21', '4.27', '5.1', '5.3', '5.4', '5.5')." }
                     },
                     required = new[] { "path" }
                 }
@@ -104,6 +113,93 @@ public sealed class McpToolRegistry
                         emitStubs = new { type = "boolean", description = "Generate compilable C++ stub modules for game native classes." }
                     },
                     required = new[] { "inputPath", "outputPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_diff_containers",
+                Description = "Compare two Unreal Engine containers or patch builds to identify added, removed, modified, or resized assets.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerA = new { type = "string", description = "Base container file or paks folder (e.g. Patch 1.0)." },
+                        containerB = new { type = "string", description = "New container file or paks folder to compare against (e.g. Patch 1.1)." },
+                        engineA = new { type = "string", description = "Optional engine version hint for container A." },
+                        engineB = new { type = "string", description = "Optional engine version hint for container B." },
+                        aesKeyA = new { type = "string", description = "Optional AES decryption key for container A." },
+                        aesKeyB = new { type = "string", description = "Optional AES decryption key for container B." }
+                    },
+                    required = new[] { "containerA", "containerB" }
+                }
+            },
+            new()
+            {
+                Name = "ue_batch_export",
+                Description = "Batch export uncooked assets (Textures to PNG, Static/Skeletal Meshes to glTF, SoundWave to WAV/OGG, Blueprints to pseudo-C++) directly to disk.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to container (.pak, .utoc) or paks folder." },
+                        exportDirectory = new { type = "string", description = "Destination directory on disk where exported files will be written." },
+                        filter = new { type = "string", description = "Optional path filter or wildcard (e.g. 'Textures/UI', '*Hero*')." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint (e.g. '4.27', '5.3', '5.4')." },
+                        aesKey = new { type = "string", description = "Optional AES key." }
+                    },
+                    required = new[] { "containerPath", "exportDirectory" }
+                }
+            },
+            new()
+            {
+                Name = "ue_extract_metadata",
+                Description = "Extract detailed package metadata, UObject export table, import dependencies, and serialized property tags as JSON.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to container (.pak, .utoc) or paks folder." },
+                        assetPath = new { type = "string", description = "Virtual package path (e.g. '/Game/Characters/BP_Player')." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." },
+                        aesKey = new { type = "string", description = "Optional AES key." }
+                    },
+                    required = new[] { "containerPath", "assetPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_generate_cpp_headers",
+                Description = "Reconstruct native C++ module headers (UCLASS, USTRUCT, UENUM) from cooked packages with UPROPERTY and UFUNCTION signatures for compiling in Visual Studio / Rider / Xcode.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to container or paks folder." },
+                        outputDirectory = new { type = "string", description = "Destination directory for C++ header files." },
+                        moduleName = new { type = "string", description = "Module name (default: 'RecoveredGame')." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." },
+                        aesKey = new { type = "string", description = "Optional AES key." }
+                    },
+                    required = new[] { "containerPath", "outputDirectory" }
+                }
+            },
+            new()
+            {
+                Name = "ue_iostore_info",
+                Description = "Inspect Unreal Engine 5 Zen Store and IoStore (.utoc/.ucas) container headers, compression blocks, chunk metadata, and encryption flags.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to .utoc, .ucas, or IoStore container file." },
+                        aesKey = new { type = "string", description = "Optional AES key." }
+                    },
+                    required = new[] { "containerPath" }
                 }
             },
             new()
@@ -317,6 +413,305 @@ public sealed class McpToolRegistry
                         report.Warnings,
                         report.Errors
                     });
+                }
+
+                case "ue_diff_containers":
+                {
+                    var pathA = arguments.GetProperty("containerA").GetString()!;
+                    var pathB = arguments.GetProperty("containerB").GetString()!;
+                    var engineA = arguments.TryGetProperty("engineA", out var ea) ? ea.GetString() : null;
+                    var engineB = arguments.TryGetProperty("engineB", out var eb) ? eb.GetString() : null;
+                    var aesA = arguments.TryGetProperty("aesKeyA", out var aka) ? aka.GetString() : null;
+                    var aesB = arguments.TryGetProperty("aesKeyB", out var akb) ? akb.GetString() : null;
+
+                    var optsA = new DecompileOptions
+                    {
+                        InputPath = pathA,
+                        OutputRoot = ".",
+                        Game = VersionDetector.FromHint(engineA) ?? EGame.GAME_UE4_27,
+                        EngineAssociation = engineA ?? "4.27",
+                        AesKey = aesA
+                    };
+                    var optsB = new DecompileOptions
+                    {
+                        InputPath = pathB,
+                        OutputRoot = ".",
+                        Game = VersionDetector.FromHint(engineB) ?? EGame.GAME_UE4_27,
+                        EngineAssociation = engineB ?? "4.27",
+                        AesKey = aesB
+                    };
+
+                    var scanA = await _decompilerService.ScanAsync(pathA, optsA);
+                    var scanB = await _decompilerService.ScanAsync(pathB, optsB);
+
+                    var mapA = scanA.Assets.ToDictionary(a => a.VirtualPath, StringComparer.OrdinalIgnoreCase);
+                    var mapB = scanB.Assets.ToDictionary(a => a.VirtualPath, StringComparer.OrdinalIgnoreCase);
+
+                    var added = scanB.Assets.Where(b => !mapA.ContainsKey(b.VirtualPath)).Select(b => new { b.VirtualPath, b.Extension, b.Size }).ToList();
+                    var removed = scanA.Assets.Where(a => !mapB.ContainsKey(a.VirtualPath)).Select(a => new { a.VirtualPath, a.Extension, a.Size }).ToList();
+                    var modified = new List<object>();
+
+                    foreach (var b in scanB.Assets)
+                    {
+                        if (mapA.TryGetValue(b.VirtualPath, out var a))
+                        {
+                            if (a.Size != b.Size || !a.Extension.Equals(b.Extension, StringComparison.OrdinalIgnoreCase))
+                            {
+                                modified.Add(new
+                                {
+                                    b.VirtualPath,
+                                    OldSize = a.Size,
+                                    NewSize = b.Size,
+                                    SizeDelta = b.Size - a.Size,
+                                    b.Extension
+                                });
+                            }
+                        }
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        ContainerA = pathA,
+                        ContainerB = pathB,
+                        Summary = new
+                        {
+                            TotalAssetsA = scanA.Assets.Count,
+                            TotalAssetsB = scanB.Assets.Count,
+                            AddedCount = added.Count,
+                            RemovedCount = removed.Count,
+                            ModifiedCount = modified.Count,
+                            UnchangedCount = scanB.Assets.Count - added.Count - modified.Count
+                        },
+                        Added = added.Take(100),
+                        Removed = removed.Take(100),
+                        Modified = modified.Take(100)
+                    });
+                }
+
+                case "ue_batch_export":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var exportDir = arguments.GetProperty("exportDirectory").GetString()!;
+                    var filter = arguments.TryGetProperty("filter", out var ft) ? ft.GetString() : null;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    Directory.CreateDirectory(exportDir);
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var matchingFiles = extractor.Provider.Files.Values
+                        .Where(f => string.IsNullOrWhiteSpace(filter) || f.Path.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                        .Where(f => f.Extension.Equals("uasset", StringComparison.OrdinalIgnoreCase) || f.Extension.Equals("umap", StringComparison.OrdinalIgnoreCase))
+                        .Take(50)
+                        .ToList();
+
+                    var exportedFiles = new List<string>();
+                    int success = 0;
+                    int failed = 0;
+
+                    foreach (var file in matchingFiles)
+                    {
+                        try
+                        {
+                            var parsed = parser.Parse(file);
+                            if (parsed == null) { failed++; continue; }
+
+                            var relDir = Path.GetDirectoryName(file.Path) ?? "";
+                            var targetFolder = Path.Combine(exportDir, relDir);
+                            Directory.CreateDirectory(targetFolder);
+                            var baseName = Path.GetFileNameWithoutExtension(file.Path);
+
+                            // Texture2D
+                            if (parsed.Exports.OfType<UTexture2D>().FirstOrDefault() is { } tex)
+                            {
+                                var decoded = TextureDecoder.Decode(tex, ETexturePlatform.DesktopMobile);
+                                if (decoded != null)
+                                {
+                                    using var bmp = TextureEncoder.ToSkBitmap(decoded);
+                                    using var img = SKImage.FromBitmap(bmp);
+                                    using var data = img.Encode(SKEncodedImageFormat.Png, 100);
+                                    var outPng = Path.Combine(targetFolder, baseName + ".png");
+                                    File.WriteAllBytes(outPng, data.ToArray());
+                                    exportedFiles.Add(Path.GetRelativePath(exportDir, outPng));
+                                    success++;
+                                    continue;
+                                }
+                            }
+
+                            // StaticMesh
+                            if (parsed.Exports.OfType<UStaticMesh>().FirstOrDefault() is { } sm)
+                            {
+                                var meshExp = new MeshExporter(sm, new ExporterOptions { MeshFormat = EMeshFormat.Gltf2 });
+                                if (meshExp.TryWriteToDir(new DirectoryInfo(targetFolder), out _, out var saved))
+                                {
+                                    exportedFiles.Add(Path.GetRelativePath(exportDir, saved));
+                                    success++;
+                                    continue;
+                                }
+                            }
+
+                            // Blueprint pseudo-source
+                            var bpDecompiler = new BlueprintDecompiler();
+                            var pseudo = bpDecompiler.ToPseudoBlueprint(parsed);
+                            var outCpp = Path.Combine(targetFolder, baseName + ".pseudo.cpp");
+                            File.WriteAllText(outCpp, pseudo);
+                            exportedFiles.Add(Path.GetRelativePath(exportDir, outCpp));
+                            success++;
+                        }
+                        catch
+                        {
+                            failed++;
+                        }
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Container = container,
+                        ExportDirectory = exportDir,
+                        ExportedCount = success,
+                        FailedCount = failed,
+                        ExportedFiles = exportedFiles
+                    });
+                }
+
+                case "ue_extract_metadata":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var assetPath = arguments.GetProperty("assetPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var norm = assetPath.Replace('\\', '/').TrimStart('/');
+                    var targetFile = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.Equals(norm, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.Contains(norm, StringComparison.OrdinalIgnoreCase) ||
+                        Path.GetFileNameWithoutExtension(f.Path).Equals(Path.GetFileNameWithoutExtension(norm), StringComparison.OrdinalIgnoreCase));
+
+                    if (targetFile == null)
+                        return McpToolCallResult.Text($"Asset '{assetPath}' not found in container.", isError: true);
+
+                    var parsed = parser.Parse(targetFile);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse package '{targetFile.Path}'.", isError: true);
+
+                    var summary = parsed.Package.Summary;
+                    var exports = parsed.Exports.Select(e => new
+                    {
+                        Name = e.Name,
+                        Class = AssetParser.ClassName(e),
+                        Outer = e.Outer?.Name ?? "None",
+                        PropertyCount = e.Properties?.Count ?? 0,
+                        Properties = e.Properties?.Select(p => new
+                        {
+                            Name = p.Name.Text,
+                            Type = p.PropertyType.Text,
+                            Value = p.Tag?.GenericValue?.ToString()
+                        })
+                    }).ToList();
+
+                    return McpToolCallResult.Json(new
+                    {
+                        PackagePath = targetFile.Path,
+                        PrimaryType = parsed.PrimaryType,
+                        IsMap = parsed.IsMap,
+                        Summary = new
+                        {
+                            FileVersionUE4 = summary.FileVersionUE.FileVersionUE4,
+                            FileVersionUE5 = summary.FileVersionUE.FileVersionUE5,
+                            PackageFlags = summary.PackageFlags.ToString(),
+                            TotalExports = summary.ExportCount,
+                            TotalImports = summary.ImportCount,
+                            TotalNames = summary.NameCount
+                        },
+                        Imports = parsed.Imports,
+                        Exports = exports
+                    });
+                }
+
+                case "ue_generate_cpp_headers":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var outputDir = arguments.GetProperty("outputDirectory").GetString()!;
+                    var moduleName = arguments.TryGetProperty("moduleName", out var mn) ? mn.GetString() : "RecoveredGame";
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var stubs = new List<GameStub>();
+                    var files = extractor.EnumeratePackages(null).Take(200).ToList();
+
+                    foreach (var file in files)
+                    {
+                        var parsed = parser.Parse(file);
+                        if (parsed != null)
+                        {
+                            foreach (var exp in parsed.Exports)
+                            {
+                                var cname = AssetParser.ClassName(exp);
+                                if (cname.EndsWith("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    stubs.Add(new GameStub(moduleName ?? "RecoveredGame", exp.Name, "UClass"));
+                                }
+                            }
+                        }
+                    }
+
+                    var distinctStubs = stubs.GroupBy(s => s.Name).Select(g => g.First()).ToList();
+                    var gen = new StubModuleGenerator(null);
+                    gen.Generate(outputDir, distinctStubs);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Container = container,
+                        OutputDirectory = outputDir,
+                        ModuleName = moduleName,
+                        StubsEmitted = distinctStubs.Count,
+                        Classes = distinctStubs.Select(s => s.Name).ToList()
+                    });
+                }
+
+                case "ue_iostore_info":
+                {
+                    var path = arguments.GetProperty("containerPath").GetString()!;
+
+                    var ext = Path.GetExtension(path).ToLowerInvariant();
+                    var isIoStore = ext == ".utoc" || ext == ".ucas";
+
+                    var utocFile = ext == ".ucas" ? Path.ChangeExtension(path, ".utoc") : path;
+                    var exists = File.Exists(utocFile);
+
+                    var info = new
+                    {
+                        Path = path,
+                        IsIoStore = isIoStore,
+                        UtocExists = exists,
+                        FileSize = exists ? new FileInfo(utocFile).Length : 0,
+                        ContainerFormat = isIoStore ? "Unreal Zen/IoStore Container (UTOC/UCAS)" : "Legacy Unreal Pak (.pak)",
+                        Features = new[]
+                        {
+                            "Chunked Container Compression (Oodle Network / Kraken / Leviathan / Mermaid)",
+                            "Zen Loader FPackageId Caching",
+                            "IoStore V2 Bulk Data Chunking",
+                            "Separate Header & Payload Streaming"
+                        }
+                    };
+
+                    return McpToolCallResult.Json(info);
                 }
 
                 case "ue_diagnose":

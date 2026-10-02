@@ -472,6 +472,54 @@ public sealed class TaggedPropertyWriter
         writeValue();
         EndTag(so, vs);
     }
+
+    /// <summary>Writes UE5 Nanite geometry streaming and proxy settings.</summary>
+    public void NaniteSettings(bool enableNanite, int positionPrecision = 0, float percentTriangles = 1.0f, float fallbackRelativeError = 1.0f)
+    {
+        if (_ue5)
+        {
+            Struct("NaniteSettings", "MeshNaniteSettings", "/Script/Engine", () =>
+            {
+                Bool("bEnabled", enableNanite);
+                Int("PositionPrecision", positionPrecision);
+                Float("KeepPercentTriangles", percentTriangles);
+                Float("FallbackRelativeError", fallbackRelativeError);
+                WriteNone();
+            });
+        }
+        else
+        {
+            Bool("bEnableNanite", enableNanite);
+        }
+    }
+
+    /// <summary>Writes UE5 Lumen surface cache and ray tracing indirect lighting settings.</summary>
+    public void LumenSettings(float surfaceCacheResolution = 1.0f, bool generateDistanceFields = true, bool rayTracingFarField = false)
+    {
+        Float("LumenSurfaceCacheResolution", surfaceCacheResolution);
+        Bool("bGenerateMeshDistanceField", generateDistanceFields);
+        Bool("bRayTracingFarField", rayTracingFarField);
+        Bool("bAffectDynamicIndirectLighting", true);
+        Bool("bAffectDistanceFieldLighting", true);
+    }
+
+    /// <summary>Writes UE4/UE5 Virtual Texture streaming and tile dimensions.</summary>
+    public void VirtualTextureSettings(bool enable, int tileSize = 128, int borderSize = 4)
+    {
+        Bool("bVirtualTextureEnable", enable);
+        Int("VirtualTextureTileSize", tileSize);
+        Int("VirtualTextureTileBorderSize", borderSize);
+    }
+
+    /// <summary>Writes UE5 World Partition spatial loading and runtime grid metadata.</summary>
+    public void WorldPartitionSettings(bool spatiallyLoaded, string? runtimeGrid = null)
+    {
+        Bool("bIsSpatiallyLoaded", spatiallyLoaded);
+        if (!string.IsNullOrWhiteSpace(runtimeGrid))
+        {
+            Name("RuntimeGrid", runtimeGrid);
+        }
+    }
 }
 
 /// <summary>Plain 4-uint32 GUID (matches CUE4Parse FGuid A/B/C/D ordering used by the writer).</summary>
