@@ -138,7 +138,7 @@ public sealed class StubModuleGenerator
             "Engine/LevelScriptActor.h","Engine/DataAsset.h","Animation/AnimInstance.h","Components/ActorComponent.h",
             "Components/SceneComponent.h","Components/StaticMeshComponent.h","Components/LightComponent.h",
             "Components/PointLightComponent.h","Components/SpotLightComponent.h","Components/DirectionalLightComponent.h",
-            "Camera/PlayerCameraManager.h","AIController.h","Blueprint/UserWidget.h",
+            "Camera/PlayerCameraManager.h","AIController.h","Blueprint/UserWidget.h","Engine/DataTable.h",
         }) h.AppendLine($"#include \"{inc}\"");
         h.AppendLine($"#include \"{module}.generated.h\"").AppendLine();
 
@@ -161,7 +161,10 @@ public sealed class StubModuleGenerator
                     h.AppendLine($"UENUM(BlueprintType)").AppendLine($"enum class {SanitizeEnum(t.Name)} : uint8 {{ Stub = 0 }};").AppendLine();
                     enumCount++; break;
                 case "ScriptStruct":
-                    h.AppendLine($"USTRUCT(BlueprintType)").AppendLine($"struct {StructCpp(t.Name)} {{ GENERATED_BODY() }};").AppendLine();
+                    var sKey = $"{module}.{t.Name}";
+                    var isTableRow = _baseHints.TryGetValue(sKey, out var sBase) && sBase == "FTableRowBase";
+                    var structInheritance = isTableRow ? " : public FTableRowBase" : "";
+                    h.AppendLine($"USTRUCT(BlueprintType)").AppendLine($"struct {StructCpp(t.Name)}{structInheritance} {{ GENERATED_BODY() }};").AppendLine();
                     structCount++; break;
                 default: // Class
                     string cpp, baseClass;

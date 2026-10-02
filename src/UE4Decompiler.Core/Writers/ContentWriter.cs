@@ -29,6 +29,10 @@ public sealed class ContentWriter
     private readonly MaterialReconstructor _material = new();
     private readonly BlueprintReconstructor _blueprint;
     private readonly LevelReconstructor _level = new();
+    private readonly DataTableReconstructor _dataTable = new();
+    private readonly StringTableReconstructor _stringTable = new();
+    private readonly CurveReconstructor _curve = new();
+    private readonly AudioReconstructor _audio = new();
 
     public List<ManifestEntry> Manifest { get; } = new();
     private readonly object _manifestLock = new();   // pipeline runs Process in parallel
@@ -806,6 +810,26 @@ public sealed class ContentWriter
         {
             // built lighting registry written
         }
+        else if (asset.PrimaryType is "DataTable" or "CompositeDataTable"
+                 && TryWriteDataTable(asset, outputAsset, packageName, entry))
+        {
+            // data table written (or CSV/JSON exported)
+        }
+        else if (asset.PrimaryType is "StringTable"
+                 && TryWriteStringTable(asset, outputAsset, packageName, entry))
+        {
+            // string table written
+        }
+        else if (asset.PrimaryType is "CurveFloat" or "CurveVector" or "CurveLinearColor" or "CurveTable"
+                 && TryWriteCurve(asset, outputAsset, packageName, entry))
+        {
+            // curve written
+        }
+        else if (asset.PrimaryType is "SoundWave"
+                 && TryWriteAudio(asset, outputAsset, packageName, entry))
+        {
+            // sound wave written
+        }
         else if (!TryWriteUncooked(asset, outputAsset, entry))
             // No editor-loadable form for this type. Do NOT write a stub header: a half-formed .uasset reads as
             // "unrecognizable data" and CRASHES the editor when a map references it, whereas simply omitting the
@@ -814,6 +838,122 @@ public sealed class ContentWriter
                                                           : entry.Note + "; skipped (no editor-loadable form)";
 
         return entry;
+    }
+
+    private bool TryWriteDataTable(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            bool uncookedWritten = false;
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+            {
+                uncookedWritten = TryWriteUncooked(asset, outputAsset, entry);
+            }
+
+            var table = asset.Exports.OfType<CUE4Parse.UE4.Assets.Exports.Engine.UDataTable>().FirstOrDefault();
+            if (table != null)
+            {
+                var rowStruct = table.RowStructName;
+                if (!string.IsNullOrWhiteSpace(rowStruct))
+                {
+                    var structObj = table.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FPackageIndex>("RowStruct")?.ResolvedObject;
+                    var structPkg = structObj?.GetPathName();
+                    if (!string.IsNullOrEmpty(structPkg) && structPkg.StartsWith("/Script/", StringComparison.Ordinal))
+                    {
+                        var dot = structPkg.IndexOf('.');
+                        if (dot > 0)
+                        {
+                            var module = structPkg.Substring("/Script/".Length, dot - "/Script/".Length);
+                            if (!EngineModuleNames().Contains(module))
+                            {
+                                var key = $"{module}.{rowStruct}";
+                                GameStubs.TryAdd(key, new GameStub(module, rowStruct, "ScriptStruct"));
+                                SetStubBaseHint(key, "FTableRowBase");
+                            }
+                        }
+                    }
+                }
+            }
+
+            entry.Fidelity = Fidelity.Full;
+            var note = uncookedWritten ? "DataTable (.uasset + .csv/.json sidecars)" : "DataTable (.csv/.json sidecars for editor re-import)";
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? note : entry.Note + $"; {note}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "DataTable processing failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteStringTable(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            bool uncookedWritten = false;
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+            {
+                uncookedWritten = TryWriteUncooked(asset, outputAsset, entry);
+            }
+
+            entry.Fidelity = Fidelity.Full;
+            var note = uncookedWritten ? "StringTable (.uasset + .csv/.json sidecars)" : "StringTable (.csv/.json sidecars for editor re-import)";
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? note : entry.Note + $"; {note}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "StringTable processing failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteCurve(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            bool uncookedWritten = false;
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+            {
+                uncookedWritten = TryWriteUncooked(asset, outputAsset, entry);
+            }
+
+            entry.Fidelity = Fidelity.Full;
+            var note = uncookedWritten ? $"{asset.PrimaryType} (.uasset + .csv/.json sidecars)" : $"{asset.PrimaryType} (.csv/.json sidecars for editor re-import)";
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? note : entry.Note + $"; {note}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Curve processing failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteAudio(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            bool uncookedWritten = false;
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+            {
+                uncookedWritten = TryWriteUncooked(asset, outputAsset, entry);
+            }
+
+            if (entry.SidecarFiles.Any(s => s.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) || s.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)))
+            {
+                entry.Fidelity = Fidelity.Full;
+                return true;
+            }
+
+            return uncookedWritten;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Audio processing failed for {Path}", asset.File.Path);
+            return false;
+        }
     }
 
     private bool TryWriteBuiltData(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
@@ -2012,10 +2152,10 @@ public sealed class ContentWriter
 
     private ReconstructionResult Route(ParsedAsset asset, string outputNoExt)
     {
-        // Fast path: skip the expensive texture-PNG / mesh-glb / sound exports. The real editor-loadable
+        // Fast path: skip the expensive texture-PNG / mesh-glb exports. The real editor-loadable
         // .uasset is still written by TryWriteUncooked; only the media side-export is elided.
         if (_opts.NoMediaExport && asset.PrimaryType is
-            "Texture2D" or "TextureCube" or "StaticMesh" or "SkeletalMesh" or "SoundWave")
+            "Texture2D" or "TextureCube" or "StaticMesh" or "SkeletalMesh")
             return new ReconstructionResult
             {
                 Fidelity = Fidelity.Partial,
@@ -2043,7 +2183,10 @@ public sealed class ContentWriter
             "StaticMesh" or "SkeletalMesh" => _mesh.Reconstruct(asset, outputNoExt),
             "Material" or "MaterialInstanceConstant" => _material.Reconstruct(asset, outputNoExt),
             "World" or "Level" => _level.Reconstruct(asset, outputNoExt),
-            "SoundWave" => CopyRaw(asset),
+            "SoundWave" or "SoundCue" => _audio.Reconstruct(asset, outputNoExt, _opts.NoMediaExport),
+            "DataTable" or "CompositeDataTable" => _dataTable.Reconstruct(asset, outputNoExt),
+            "StringTable" => _stringTable.Reconstruct(asset, outputNoExt),
+            "CurveFloat" or "CurveVector" or "CurveLinearColor" or "CurveTable" => _curve.Reconstruct(asset, outputNoExt),
             _ => Generic(asset)
         };
     }

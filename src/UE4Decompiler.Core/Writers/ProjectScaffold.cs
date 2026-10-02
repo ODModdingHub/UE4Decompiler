@@ -38,6 +38,7 @@ public sealed class ProjectScaffold
             WriteDefaultEngine();
             WriteDefaultGame();
             WriteDefaultEditor();
+            WriteDefaultInput();
         }
         Log.Information("Scaffolded project {Name} (engine {Assoc}) at {Root} [uproject={U}, configs={C}]",
             _opts.ProjectName, _opts.EngineAssociation, _opts.OutputRoot,
@@ -199,7 +200,35 @@ public sealed class ProjectScaffold
         sb.AppendLine("[Core.System]");
         sb.AppendLine("Paths=../../../Engine/Content");
         sb.AppendLine("Paths=%GAMEDIR%Content");
+        if (_opts.Game >= CUE4Parse.UE4.Versions.EGame.GAME_UE5_0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("[/Script/Engine.RendererSettings]");
+            sb.AppendLine("r.DynamicGlobalIlluminationMethod=1");
+            sb.AppendLine("r.ReflectionMethod=1");
+            sb.AppendLine("r.Shadow.Virtual.Enable=1");
+            sb.AppendLine("r.Nanite=1");
+            sb.AppendLine("r.Lumen.DiffuseIndirect.Allow=1");
+        }
         Write("DefaultEngine.ini", sb.ToString());
+    }
+
+    private void WriteDefaultInput()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("[/Script/Engine.InputSettings]");
+        sb.AppendLine("bUseMouseForTouch=False");
+        sb.AppendLine("bEnableMouseSmoothing=True");
+        sb.AppendLine("+ActionMappings=(ActionName=\"Jump\",bShift=False,bCtrl=False,bAlt=False,bCmd=False,Key=SpaceBar)");
+        sb.AppendLine("+ActionMappings=(ActionName=\"Fire\",bShift=False,bCtrl=False,bAlt=False,bCmd=False,Key=LeftMouseButton)");
+        sb.AppendLine("+ActionMappings=(ActionName=\"Interact\",bShift=False,bCtrl=False,bAlt=False,bCmd=False,Key=E)");
+        sb.AppendLine("+AxisMappings=(AxisName=\"MoveForward\",Scale=1.000000,Key=W)");
+        sb.AppendLine("+AxisMappings=(AxisName=\"MoveForward\",Scale=-1.000000,Key=S)");
+        sb.AppendLine("+AxisMappings=(AxisName=\"MoveRight\",Scale=1.000000,Key=D)");
+        sb.AppendLine("+AxisMappings=(AxisName=\"MoveRight\",Scale=-1.000000,Key=A)");
+        sb.AppendLine("+AxisMappings=(AxisName=\"Turn\",Scale=1.000000,Key=MouseX)");
+        sb.AppendLine("+AxisMappings=(AxisName=\"LookUp\",Scale=-1.000000,Key=MouseY)");
+        Write("DefaultInput.ini", sb.ToString());
     }
 
     private void WriteDefaultGame()

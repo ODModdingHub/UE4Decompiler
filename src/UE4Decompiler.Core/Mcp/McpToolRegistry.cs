@@ -1,9 +1,13 @@
 using System.Text.Json;
+using CUE4Parse.UE4.Assets.Exports.Engine;
+using CUE4Parse.UE4.Assets.Exports.Internationalization;
+using CUE4Parse.UE4.Assets.Exports.Sound;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UE4.Versions;
 using CUE4Parse_Conversion;
 using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Sounds;
 using CUE4Parse_Conversion.Textures;
 using SkiaSharp;
 using UE4Decompiler.Core.Abstractions;
@@ -868,6 +872,43 @@ public sealed class McpToolRegistry
                         }
                     }
 
+                    object? dataInfo = null;
+                    if (parsed.Exports.OfType<UDataTable>().FirstOrDefault() is { } dt)
+                    {
+                        var rowCount = dt.RowMap?.Count ?? 0;
+                        var cols = dt.RowMap?.Values.FirstOrDefault()?.Properties?.Select(p => p.Name.Text).ToList();
+                        dataInfo = new
+                        {
+                            Type = "DataTable",
+                            RowStruct = dt.RowStructName,
+                            RowCount = rowCount,
+                            Columns = cols,
+                            SampleRows = dt.RowMap?.Take(5).ToDictionary(kvp => kvp.Key.Text, kvp => (object)(kvp.Value?.Properties?.ToDictionary(p => p.Name.Text, p => p.Tag?.GenericValue?.ToString() ?? "null") ?? new()))
+                        };
+                    }
+                    else if (parsed.Exports.OfType<UStringTable>().FirstOrDefault() is { } st)
+                    {
+                        dataInfo = new
+                        {
+                            Type = "StringTable",
+                            Namespace = st.StringTable?.TableNamespace,
+                            EntryCount = st.StringTable?.KeysToEntries?.Count ?? 0,
+                            SampleEntries = st.StringTable?.KeysToEntries?.Take(10).ToDictionary(kvp => kvp.Key, kvp => kvp.Value)
+                        };
+                    }
+                    else if (parsed.Exports.OfType<USoundWave>().FirstOrDefault() is { } sw)
+                    {
+                        dataInfo = new
+                        {
+                            Type = "SoundWave",
+                            Duration = sw.GetOrDefault<float>("Duration", 0f),
+                            NumChannels = sw.GetOrDefault<int>("NumChannels", 2),
+                            SampleRate = sw.GetOrDefault<int>("SampleRate", 44100),
+                            bStreaming = sw.bStreaming,
+                            SoundGroup = sw.GetOrDefault("SoundGroup", "SOUNDGROUP_Default")?.ToString()
+                        };
+                    }
+
                     return McpToolCallResult.Json(new
                     {
                         VirtualPath = file.Path,
@@ -876,6 +917,7 @@ public sealed class McpToolRegistry
                         ExportCount = exports.Count,
                         Exports = exports,
                         MaterialParameters = matParams.Count > 0 ? matParams : null,
+                        DataInfo = dataInfo,
                         Properties = primaryExp?.Properties?.ToDictionary(p => p.Name.Text, p => p.Tag?.GenericValue?.ToString() ?? "null")
                     });
                 }
@@ -932,6 +974,30 @@ public sealed class McpToolRegistry
                         {
                             return McpToolCallResult.Json(new { Success = true, OutputPath = saved, Format = "glTF 2.0 Mesh" });
                         }
+                    }
+
+                    if (parsed.Exports.OfType<UDataTable>().FirstOrDefault() is { } dtExp && (format == "auto" || format == "csv"))
+                    {
+                        var dtr = new DataTableReconstructor();
+                        var res = dtr.Reconstruct(parsed, Path.Combine(targetDir, Path.GetFileNameWithoutExtension(outputFile)));
+                        var outCsv = outputFile.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ? outputFile : outputFile + ".csv";
+                        return McpToolCallResult.Json(new { Success = true, OutputPath = outCsv, Format = "CSV DataTable", res.Note });
+                    }
+
+                    if (parsed.Exports.OfType<UStringTable>().FirstOrDefault() is { } stExp && (format == "auto" || format == "csv"))
+                    {
+                        var str = new StringTableReconstructor();
+                        var res = str.Reconstruct(parsed, Path.Combine(targetDir, Path.GetFileNameWithoutExtension(outputFile)));
+                        var outCsv = outputFile.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ? outputFile : outputFile + ".csv";
+                        return McpToolCallResult.Json(new { Success = true, OutputPath = outCsv, Format = "CSV StringTable", res.Note });
+                    }
+
+                    if (parsed.Exports.OfType<USoundWave>().FirstOrDefault() is { } swExp && (format == "auto" || format == "wav" || format == "ogg"))
+                    {
+                        var ar = new AudioReconstructor();
+                        var res = ar.Reconstruct(parsed, Path.Combine(targetDir, Path.GetFileNameWithoutExtension(outputFile)));
+                        var writtenFile = res.SidecarFiles.FirstOrDefault() ?? outputFile;
+                        return McpToolCallResult.Json(new { Success = true, OutputPath = Path.Combine(targetDir, writtenFile), Format = "Audio", res.Note });
                     }
 
                     var jsonPath = outputFile.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? outputFile : outputFile + ".json";
