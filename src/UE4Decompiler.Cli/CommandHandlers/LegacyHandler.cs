@@ -362,9 +362,14 @@ public static class LegacyHandler
             if (!o.DryRun)
             {
                 writer.ScaffoldPlugins();
+                var scaffold = new ProjectScaffold(opts, extractor.Provider);
                 if (writer.DiscoveredGameplayTags.Count > 0)
                 {
-                    new ProjectScaffold(opts, extractor.Provider).WriteDefaultGameplayTags(writer.DiscoveredGameplayTags.Keys);
+                    scaffold.WriteDefaultGameplayTags(writer.DiscoveredGameplayTags.Keys);
+                }
+                if (writer.DiscoveredCollisionProfiles.Count > 0 || writer.DiscoveredCollisionChannels.Count > 0)
+                {
+                    scaffold.WriteDefaultCollision(writer.DiscoveredCollisionProfiles.Keys, writer.DiscoveredCollisionChannels.Keys);
                 }
             }
 

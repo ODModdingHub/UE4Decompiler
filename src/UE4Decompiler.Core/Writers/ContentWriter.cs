@@ -42,6 +42,12 @@ public sealed class ContentWriter
     /// <summary>GameplayTags discovered across all packages during processing, for DefaultGameplayTags.ini scaffolding.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, byte> DiscoveredGameplayTags { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Collision profiles discovered across all packages during processing, for DefaultEngine.ini scaffolding.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, byte> DiscoveredCollisionProfiles { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Custom collision channels discovered across all packages, for DefaultEngine.ini scaffolding.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, string> DiscoveredCollisionChannels { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Game-module types referenced by imports, keyed "Module.Name" — for stub generation.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, GameStub> GameStubs { get; } = new();
 
@@ -232,6 +238,40 @@ public sealed class ContentWriter
                         var t = fn.Text;
                         if (!string.IsNullOrEmpty(t) && t != "None" && t.Contains('.'))
                             DiscoveredGameplayTags.TryAdd(t, 0);
+                    }
+                }
+                catch { }
+            }
+        }
+    }
+
+    private void CollectCollisionData(ParsedAsset asset)
+    {
+        foreach (var e in asset.Exports)
+        {
+            if (e.Properties == null) continue;
+            foreach (var prop in e.Properties)
+            {
+                try
+                {
+                    if (prop.Name.Text == "CollisionProfileName" && prop.Tag?.GenericValue is CUE4Parse.UE4.Objects.UObject.FName fn)
+                    {
+                        var profile = fn.Text;
+                        if (!string.IsNullOrEmpty(profile) && profile != "None" && profile != "Custom")
+                            DiscoveredCollisionProfiles.TryAdd(profile, 0);
+                    }
+                    else if (prop.Name.Text == "CollisionResponses" && prop.Tag?.GenericValue is CUE4Parse.UE4.Assets.Objects.FStructFallback fb)
+                    {
+                        var responses = fb.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("ResponseToChannels");
+                        if (responses != null)
+                        {
+                            foreach (var resp in responses)
+                            {
+                                var ch = resp.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Channel").Text;
+                                if (!string.IsNullOrEmpty(ch) && ch.StartsWith("ECC_GameTraceChannel", StringComparison.OrdinalIgnoreCase))
+                                    DiscoveredCollisionChannels.TryAdd(ch, "ECR_Block");
+                            }
+                        }
                     }
                 }
                 catch { }
@@ -680,6 +720,7 @@ public sealed class ContentWriter
 
         CollectGameTypes(asset); // gather game-class refs for --emit-stubs (uniform: Zen + legacy)
         CollectGameplayTags(asset); // gather gameplay tags for DefaultGameplayTags.ini
+        CollectCollisionData(asset); // gather collision profiles and channels for DefaultEngine.ini
 
         if (_opts.DryRun)
         {
@@ -867,7 +908,7 @@ public sealed class ContentWriter
         {
             // curve written
         }
-        else if (asset.PrimaryType is "SoundWave"
+        else if (asset.PrimaryType is "SoundWave" or "SoundCue" or "SoundAttenuation"
                  && TryWriteAudio(asset, outputAsset, packageName, entry))
         {
             // sound wave written
@@ -993,7 +1034,12 @@ public sealed class ContentWriter
                 uncookedWritten = TryWriteUncooked(asset, outputAsset, entry);
             }
 
-            if (entry.SidecarFiles.Any(s => s.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) || s.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)))
+            if (entry.SidecarFiles.Any(s => s.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_soundcue.py", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_attenuation.py", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_soundcue.json", StringComparison.OrdinalIgnoreCase)
+                                         || s.EndsWith("_attenuation.json", StringComparison.OrdinalIgnoreCase)))
             {
                 entry.Fidelity = Fidelity.Full;
                 return true;
@@ -2271,7 +2317,7 @@ public sealed class ContentWriter
             "StaticMesh" or "SkeletalMesh" => _mesh.Reconstruct(asset, outputNoExt),
             "Material" or "MaterialInstanceConstant" => _material.Reconstruct(asset, outputNoExt),
             "World" or "Level" => _level.Reconstruct(asset, outputNoExt),
-            "SoundWave" or "SoundCue" => _audio.Reconstruct(asset, outputNoExt, _opts.NoMediaExport),
+            "SoundWave" or "SoundCue" or "SoundAttenuation" => _audio.Reconstruct(asset, outputNoExt, _opts.NoMediaExport),
             "DataTable" or "CompositeDataTable" => _dataTable.Reconstruct(asset, outputNoExt),
             "StringTable" => _stringTable.Reconstruct(asset, outputNoExt),
             "CurveFloat" or "CurveVector" or "CurveLinearColor" or "CurveTable" => _curve.Reconstruct(asset, outputNoExt),

@@ -205,4 +205,60 @@ public class AdvancedRecoveryTests : IDisposable
         Assert.Contains("InputModifierDeadZone", json);
         Assert.Contains("InputTriggerPressed", json);
     }
+
+    [Fact]
+    public void ProjectScaffold_GeneratesDefaultCollision()
+    {
+        var configDir = Path.Combine(_tempDir, "Config");
+        Directory.CreateDirectory(configDir);
+
+        var opts = new DecompileOptions
+        {
+            InputPath = _tempDir,
+            OutputRoot = _tempDir,
+            ProjectName = "TestGame",
+            Game = EGame.GAME_UE5_3,
+            EngineAssociation = "5.3"
+        };
+
+        var provider = new DefaultFileProvider(new DirectoryInfo(_tempDir), SearchOption.TopDirectoryOnly, false, new VersionContainer(EGame.GAME_UE5_3));
+        var scaffold = new ProjectScaffold(opts, provider);
+
+        var profiles = new[] { "CustomProjectile", "WeaponTrace" };
+        var channels = new[] { "ECC_GameTraceChannel1", "ECC_GameTraceChannel2" };
+        scaffold.WriteDefaultCollision(profiles, channels);
+
+        var defaultEngine = Path.Combine(configDir, "DefaultEngine.ini");
+        Assert.True(File.Exists(defaultEngine));
+
+        var content = File.ReadAllText(defaultEngine);
+        Assert.Contains("[/Script/Engine.CollisionProfile]", content);
+        Assert.Contains("+DefaultChannelResponses=(Channel=ECC_GameTraceChannel1,DefaultResponse=ECR_Block", content);
+        Assert.Contains("+Profiles=(Name=\"CustomProjectile\",CollisionEnabled=ECollisionEnabled::QueryAndPhysics", content);
+        Assert.Contains("+Profiles=(Name=\"WeaponTrace\",CollisionEnabled=ECollisionEnabled::QueryAndPhysics", content);
+    }
+
+    [Fact]
+    public async Task McpToolRegistry_ExportReconstructionScripts_InventoriesProject()
+    {
+        var scriptsDir = Path.Combine(_tempDir, "Scripts");
+        Directory.CreateDirectory(scriptsDir);
+        File.WriteAllText(Path.Combine(scriptsDir, "MainMap_reconstruct.py"), "# py");
+        File.WriteAllText(Path.Combine(scriptsDir, "SK_Hero_sockets.py"), "# py");
+        File.WriteAllText(Path.Combine(scriptsDir, "M_Metal_mic_setup.py"), "# py");
+        File.WriteAllText(Path.Combine(scriptsDir, "Cue_Explosion_soundcue.py"), "# py");
+        File.WriteAllText(Path.Combine(scriptsDir, "Curve_Recoil_setup.py"), "# py");
+
+        var registry = new McpToolRegistry();
+        var args = JsonDocument.Parse($"{{\"outputRoot\": \"{_tempDir.Replace("\\", "\\\\")}\"}}").RootElement;
+        var result = await registry.CallToolAsync("ue_export_reconstruction_scripts", args);
+
+        Assert.False(result.IsError);
+        var json = result.Content.FirstOrDefault()?.Text;
+        Assert.NotNull(json);
+        Assert.Contains("TotalScripts\": 5", json);
+        Assert.Contains("MainMap_reconstruct.py", json);
+        Assert.Contains("SK_Hero_sockets.py", json);
+        Assert.Contains("M_Metal_mic_setup.py", json);
+    }
 }

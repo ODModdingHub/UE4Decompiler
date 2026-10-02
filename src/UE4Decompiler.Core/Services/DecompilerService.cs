@@ -244,9 +244,14 @@ public sealed class DecompilerService : IDecompilerService
             if (!resolvedOptions.DryRun)
             {
                 writer.ScaffoldPlugins();
+                var scaffold = new Output.ProjectScaffold(resolvedOptions, extractor.Provider);
                 if (writer.DiscoveredGameplayTags.Count > 0)
                 {
-                    new Output.ProjectScaffold(resolvedOptions, extractor.Provider).WriteDefaultGameplayTags(writer.DiscoveredGameplayTags.Keys);
+                    scaffold.WriteDefaultGameplayTags(writer.DiscoveredGameplayTags.Keys);
+                }
+                if (writer.DiscoveredCollisionProfiles.Count > 0 || writer.DiscoveredCollisionChannels.Count > 0)
+                {
+                    scaffold.WriteDefaultCollision(writer.DiscoveredCollisionProfiles.Keys, writer.DiscoveredCollisionChannels.Keys);
                 }
                 if (resolvedOptions.EmitStubs)
                 {

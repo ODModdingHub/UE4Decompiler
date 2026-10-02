@@ -349,6 +349,71 @@ public sealed class McpToolRegistry
                     },
                     required = new[] { "containerPath", "mapPath", "outputScript" }
                 }
+            },
+            new()
+            {
+                Name = "ue_inspect_material_instance",
+                Description = "Inspect a MaterialInstanceConstant asset to extract parent material reference, scalar parameters, vector parameters, texture parameters, and static switches.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        materialPath = new { type = "string", description = "Virtual asset package path of the material instance (e.g. '/Game/Materials/MI_Metal')." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "materialPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_sound_cue",
+                Description = "Inspect a USoundCue or USoundAttenuation asset to extract volume, pitch, referenced sound waves, and audio graph node hierarchies.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        cuePath = new { type = "string", description = "Virtual asset package path of the sound cue or attenuation asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "cuePath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_curve",
+                Description = "Inspect a UCurveFloat, CurveVector, CurveLinearColor, or UCurveTable asset to extract keyframes, tangents, interpolation modes, and multi-channel curves.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        curvePath = new { type = "string", description = "Virtual asset package path of the curve asset." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "curvePath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_export_reconstruction_scripts",
+                Description = "Scan an extracted or decompiled project output directory and inventory all Unreal Editor Python reconstruction scripts for levels, rigs, materials, sound cues, and curves.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        outputRoot = new { type = "string", description = "Path to the output directory containing the recovered project." }
+                    },
+                    required = new[] { "outputRoot" }
+                }
             }
         };
     }
@@ -1281,6 +1346,165 @@ public sealed class McpToolRegistry
                         Map = file.Path,
                         Result = result.Note,
                         result.Fidelity
+                    });
+                }
+
+                case "ue_inspect_material_instance":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var materialPath = arguments.GetProperty("materialPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = materialPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"MaterialInstance '{materialPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse material asset '{materialPath}'.", isError: true);
+
+                    var mr = new MaterialReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = mr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Material = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_sound_cue":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var cuePath = arguments.GetProperty("cuePath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = cuePath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Sound asset '{cuePath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse sound asset '{cuePath}'.", isError: true);
+
+                    var ar = new AudioReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = ar.Reconstruct(parsed, tempOut, noMediaExport: true);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Sound = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_curve":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var curvePath = arguments.GetProperty("curvePath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = curvePath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Curve asset '{curvePath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse curve asset '{curvePath}'.", isError: true);
+
+                    var cr = new CurveReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(file.Path));
+                    var result = cr.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        Curve = file.Path,
+                        result.Fidelity,
+                        result.Note,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_export_reconstruction_scripts":
+                {
+                    var outputRoot = arguments.GetProperty("outputRoot").GetString()!;
+                    if (!Directory.Exists(outputRoot))
+                        return McpToolCallResult.Text($"Directory '{outputRoot}' does not exist.", isError: true);
+
+                    var scripts = new List<object>();
+                    var validSuffixes = new[] { "_reconstruct.py", "_sockets.py", "_mic_setup.py", "_soundcue.py", "_attenuation.py", "_setup.py", "ReconstructAllLevels.py" };
+
+                    foreach (var f in Directory.EnumerateFiles(outputRoot, "*.py", SearchOption.AllDirectories))
+                    {
+                        var scriptName = Path.GetFileName(f);
+                        if (validSuffixes.Any(s => scriptName.EndsWith(s, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var fi = new FileInfo(f);
+                            var category = scriptName.EndsWith("_reconstruct.py") ? "Level"
+                                : scriptName.EndsWith("_sockets.py") ? "SkeletalSockets"
+                                : scriptName.EndsWith("_mic_setup.py") ? "MaterialInstance"
+                                : scriptName.EndsWith("_soundcue.py") ? "SoundCue"
+                                : scriptName.EndsWith("_attenuation.py") ? "SoundAttenuation"
+                                : scriptName.EndsWith("ReconstructAllLevels.py") ? "MasterBatchRunner"
+                                : "CurveOrInput";
+
+                            scripts.Add(new
+                            {
+                                FileName = scriptName,
+                                RelativePath = Path.GetRelativePath(outputRoot, f),
+                                Category = category,
+                                SizeBytes = fi.Length
+                            });
+                        }
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        OutputRoot = outputRoot,
+                        TotalScripts = scripts.Count,
+                        Scripts = scripts
                     });
                 }
 

@@ -106,7 +106,9 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
         "Skeleton",
         "AnimSequence",
         "InputAction",
-        "InputMappingContext"
+        "InputMappingContext",
+        "Curve",
+        "SoundCue"
     };
 
     public ObservableCollection<DiscoveredAsset> FilteredAssets { get; } = new();
@@ -541,7 +543,10 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
         var vp = a.VirtualPath;
         if (vp.Contains("DataTable", StringComparison.OrdinalIgnoreCase) || vp.Contains("/DT_", StringComparison.OrdinalIgnoreCase)) return "DataTable";
         if (vp.Contains("StringTable", StringComparison.OrdinalIgnoreCase) || vp.Contains("/ST_", StringComparison.OrdinalIgnoreCase)) return "StringTable";
+        if (vp.Contains("CurveTable", StringComparison.OrdinalIgnoreCase) || vp.Contains("/CT_", StringComparison.OrdinalIgnoreCase)) return "CurveTable";
         if (vp.Contains("Curve", StringComparison.OrdinalIgnoreCase)) return "Curve";
+        if (vp.Contains("SoundCue", StringComparison.OrdinalIgnoreCase) || vp.Contains("/SC_", StringComparison.OrdinalIgnoreCase)) return "SoundCue";
+        if (vp.Contains("Attenuation", StringComparison.OrdinalIgnoreCase)) return "SoundAttenuation";
         if (vp.Contains("Skeleton", StringComparison.OrdinalIgnoreCase) || vp.Contains("/SK_", StringComparison.OrdinalIgnoreCase)) return "Skeleton";
         if (vp.Contains("AnimSequence", StringComparison.OrdinalIgnoreCase) || vp.Contains("/AS_", StringComparison.OrdinalIgnoreCase) || vp.Contains("Montage", StringComparison.OrdinalIgnoreCase)) return "AnimSequence";
         if (vp.Contains("InputAction", StringComparison.OrdinalIgnoreCase) || vp.Contains("/IA_", StringComparison.OrdinalIgnoreCase)) return "InputAction";

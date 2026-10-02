@@ -277,12 +277,40 @@ public sealed class ProjectScaffold
         Log.Information("Scaffolded DefaultGameplayTags.ini with {Count} discovered gameplay tag(s)", tagList.Count);
     }
 
+    public void WriteDefaultCollision(IEnumerable<string> profiles, IEnumerable<string> channels)
+    {
+        var profileList = profiles.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p).ToList();
+        var channelList = channels.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(c => c).ToList();
+        if (profileList.Count == 0 && channelList.Count == 0) return;
+
+        var defaultEnginePath = Path.Combine(_opts.OutputRoot, "Config", "DefaultEngine.ini");
+        var sb = new StringBuilder();
+        if (File.Exists(defaultEnginePath))
+            sb.Append(File.ReadAllText(defaultEnginePath));
+        else
+            sb.AppendLine("[/Script/Engine.CollisionProfile]");
+
+        sb.AppendLine();
+        sb.AppendLine("[/Script/Engine.CollisionProfile]");
+        foreach (var ch in channelList)
+        {
+            sb.AppendLine($"+DefaultChannelResponses=(Channel={ch},DefaultResponse=ECR_Block,bTraceType=False,bStaticObject=False)");
+        }
+        foreach (var prof in profileList)
+        {
+            sb.AppendLine($"+Profiles=(Name=\"{prof}\",CollisionEnabled=ECollisionEnabled::QueryAndPhysics,ObjectTypeName=\"WorldStatic\",Description=\"Recovered collision profile {prof}\")");
+        }
+        File.WriteAllText(defaultEnginePath, sb.ToString());
+        Log.Information("Appended {Profiles} collision profile(s) and {Channels} channel(s) to DefaultEngine.ini", profileList.Count, channelList.Count);
+    }
+
     private void WriteMasterPythonScript()
     {
         var sb = new StringBuilder();
         sb.AppendLine("# ===========================================================================");
         sb.AppendLine("# UE4Decompiler Master Batch Reconstruction Runner");
-        sb.AppendLine("# Executes all level and skeletal socket reconstruction scripts in batch.");
+        sb.AppendLine("# Executes all level, skeletal socket, material instance, sound cue, and");
+        sb.AppendLine("# curve reconstruction scripts in batch.");
         sb.AppendLine("# Run via Unreal Editor Output Log (Python):");
         sb.AppendLine("#     py \"Scripts/ReconstructAllLevels.py\"");
         sb.AppendLine("# ===========================================================================");
@@ -293,9 +321,10 @@ public sealed class ProjectScaffold
         sb.AppendLine("    content_dir = os.path.join(proj_dir, 'Content')");
         sb.AppendLine("    unreal.log(f'>>> [UE4Decompiler] Scanning {content_dir} for reconstruction scripts...')");
         sb.AppendLine("    count = 0");
+        sb.AppendLine("    suffixes = ('_reconstruct.py', '_sockets.py', '_mic_setup.py', '_soundcue.py', '_attenuation.py', '_setup.py')");
         sb.AppendLine("    for root, dirs, files in os.walk(content_dir):");
         sb.AppendLine("        for f in files:");
-        sb.AppendLine("            if f.endswith('_reconstruct.py') or f.endswith('_sockets.py'):");
+        sb.AppendLine("            if f.endswith(suffixes):");
         sb.AppendLine("                path = os.path.join(root, f)");
         sb.AppendLine("                unreal.log(f'>>> [UE4Decompiler] Running script: {f}...')");
         sb.AppendLine("                try:");

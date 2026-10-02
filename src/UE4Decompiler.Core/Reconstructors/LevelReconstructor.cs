@@ -90,7 +90,10 @@ public sealed class LevelReconstructor
                     RectLights = lighting.RectLights.Count,
                     HeightFog = lighting.HeightFogs.Count,
                     SkyAtmosphere = lighting.SkyAtmospheres.Count,
-                    PostProcessVolumes = lighting.PostProcessVolumes.Count
+                    PostProcessVolumes = lighting.PostProcessVolumes.Count,
+                    Decals = lighting.Decals.Count,
+                    AmbientSounds = lighting.AmbientSounds.Count,
+                    Cameras = lighting.Cameras.Count
                 },
                 Lighting = lighting
             };
@@ -368,6 +371,59 @@ public sealed class LevelReconstructor
             env.PostProcessVolumes.Add(pp);
             return;
         }
+
+        // Decal Actor
+        if (cls.Contains("Decal", StringComparison.OrdinalIgnoreCase) ||
+            compCls.Contains("DecalComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            var decalMat = comp?.GetOrDefault<FPackageIndex>("DecalMaterial")?.ResolvedObject?.GetPathName();
+            var decalSize = ReadVector(comp, "DecalSize", 128f, 256f, 256f);
+            env.Decals.Add(new DecalActorData
+            {
+                ActorName = actor.Name,
+                Location = actor.Location,
+                Rotation = actor.Rotation,
+                Scale = actor.Scale,
+                DecalMaterial = decalMat,
+                DecalSize = decalSize
+            });
+            return;
+        }
+
+        // Ambient Sound
+        if (cls.Contains("AmbientSound", StringComparison.OrdinalIgnoreCase) ||
+            compCls.Contains("AudioComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            var soundPath = comp?.GetOrDefault<FPackageIndex>("Sound")?.ResolvedObject?.GetPathName();
+            var volume = ReadFloat(comp, "VolumeMultiplier", 1.0f);
+            var pitch = ReadFloat(comp, "PitchMultiplier", 1.0f);
+            env.AmbientSounds.Add(new AmbientSoundData
+            {
+                ActorName = actor.Name,
+                Location = actor.Location,
+                SoundPath = soundPath,
+                VolumeMultiplier = volume,
+                PitchMultiplier = pitch
+            });
+            return;
+        }
+
+        // Camera Actor
+        if (cls.Contains("CameraActor", StringComparison.OrdinalIgnoreCase) ||
+            compCls.Contains("CameraComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            var fov = ReadFloat(comp, "FieldOfView", 90.0f);
+            var aspect = ReadFloat(comp, "AspectRatio", 1.777778f);
+            env.Cameras.Add(new CameraActorData
+            {
+                ActorName = actor.Name,
+                Location = actor.Location,
+                Rotation = actor.Rotation,
+                FieldOfView = fov,
+                AspectRatio = aspect
+            });
+            return;
+        }
     }
 
     private static string GenerateUnrealPythonScript(string mapName, string virtualPath, LevelLightingEnvironment lighting, List<LevelActorData> actors)
@@ -608,6 +664,80 @@ public sealed class LevelReconstructor
             sb.AppendLine();
         }
 
+        // 8. Decal Actors
+        if (lighting.Decals.Count > 0)
+        {
+            sb.AppendLine("    # -------------------------------------------------------------");
+            sb.AppendLine($"    # 8. Decal Actors ({lighting.Decals.Count} placed decals)");
+            sb.AppendLine("    # -------------------------------------------------------------");
+            foreach (var d in lighting.Decals)
+            {
+                sb.AppendLine("    try:");
+                sb.AppendLine($"        loc = unreal.Vector({d.Location[0]:F2}, {d.Location[1]:F2}, {d.Location[2]:F2})");
+                sb.AppendLine($"        rot = unreal.Rotator({d.Rotation[0]:F2}, {d.Rotation[1]:F2}, {d.Rotation[2]:F2})");
+                sb.AppendLine("        decal_act = actor_sub.spawn_actor_from_class(unreal.DecalActor, loc, rot)");
+                sb.AppendLine($"        decal_act.set_actor_label('{d.ActorName}')");
+                sb.AppendLine("        decal_comp = decal_act.get_component_by_class(unreal.DecalComponent)");
+                sb.AppendLine("        if decal_comp:");
+                sb.AppendLine($"            decal_comp.set_editor_property('DecalSize', unreal.Vector({d.DecalSize[0]:F2}, {d.DecalSize[1]:F2}, {d.DecalSize[2]:F2}))");
+                if (!string.IsNullOrEmpty(d.DecalMaterial))
+                {
+                    sb.AppendLine($"            dmat = unreal.EditorAssetLibrary.load_asset('{d.DecalMaterial}')");
+                    sb.AppendLine("            if dmat: decal_comp.set_decal_material(dmat)");
+                }
+                sb.AppendLine("    except Exception: pass");
+            }
+            sb.AppendLine();
+        }
+
+        // 9. Ambient Sound Actors
+        if (lighting.AmbientSounds.Count > 0)
+        {
+            sb.AppendLine("    # -------------------------------------------------------------");
+            sb.AppendLine($"    # 9. Ambient Sound Actors ({lighting.AmbientSounds.Count} placed audio sources)");
+            sb.AppendLine("    # -------------------------------------------------------------");
+            foreach (var s in lighting.AmbientSounds)
+            {
+                sb.AppendLine("    try:");
+                sb.AppendLine($"        loc = unreal.Vector({s.Location[0]:F2}, {s.Location[1]:F2}, {s.Location[2]:F2})");
+                sb.AppendLine("        snd_act = actor_sub.spawn_actor_from_class(unreal.AmbientSound, loc)");
+                sb.AppendLine($"        snd_act.set_actor_label('{s.ActorName}')");
+                sb.AppendLine("        audio_comp = snd_act.get_component_by_class(unreal.AudioComponent)");
+                sb.AppendLine("        if audio_comp:");
+                sb.AppendLine($"            audio_comp.set_volume_multiplier({s.VolumeMultiplier.ToString(CultureInfo.InvariantCulture)})");
+                sb.AppendLine($"            audio_comp.set_pitch_multiplier({s.PitchMultiplier.ToString(CultureInfo.InvariantCulture)})");
+                if (!string.IsNullOrEmpty(s.SoundPath))
+                {
+                    sb.AppendLine($"            snd = unreal.EditorAssetLibrary.load_asset('{s.SoundPath}')");
+                    sb.AppendLine("            if snd: audio_comp.set_sound(snd)");
+                }
+                sb.AppendLine("    except Exception: pass");
+            }
+            sb.AppendLine();
+        }
+
+        // 10. Camera Actors
+        if (lighting.Cameras.Count > 0)
+        {
+            sb.AppendLine("    # -------------------------------------------------------------");
+            sb.AppendLine($"    # 10. Camera Actors ({lighting.Cameras.Count} placed cameras)");
+            sb.AppendLine("    # -------------------------------------------------------------");
+            foreach (var c in lighting.Cameras)
+            {
+                sb.AppendLine("    try:");
+                sb.AppendLine($"        loc = unreal.Vector({c.Location[0]:F2}, {c.Location[1]:F2}, {c.Location[2]:F2})");
+                sb.AppendLine($"        rot = unreal.Rotator({c.Rotation[0]:F2}, {c.Rotation[1]:F2}, {c.Rotation[2]:F2})");
+                sb.AppendLine("        cam_act = actor_sub.spawn_actor_from_class(unreal.CameraActor, loc, rot)");
+                sb.AppendLine($"        cam_act.set_actor_label('{c.ActorName}')");
+                sb.AppendLine("        cam_comp = cam_act.get_component_by_class(unreal.CameraComponent)");
+                sb.AppendLine("        if cam_comp:");
+                sb.AppendLine($"            cam_comp.set_editor_property('FieldOfView', {c.FieldOfView.ToString(CultureInfo.InvariantCulture)})");
+                sb.AppendLine($"            cam_comp.set_editor_property('AspectRatio', {c.AspectRatio.ToString(CultureInfo.InvariantCulture)})");
+                sb.AppendLine("    except Exception: pass");
+            }
+            sb.AppendLine();
+        }
+
         sb.AppendLine($"    unreal.log('>>> [UE4Decompiler] Level reconstruction complete for: {mapName}')");
         sb.AppendLine();
         sb.AppendLine("if __name__ == '__main__':");
@@ -696,10 +826,16 @@ public sealed class LevelLightingEnvironment
     public List<HeightFogData> HeightFogs { get; } = new();
     public List<SkyAtmosphereData> SkyAtmospheres { get; } = new();
     public List<PostProcessData> PostProcessVolumes { get; } = new();
+    public List<DecalActorData> Decals { get; } = new();
+    public List<AmbientSoundData> AmbientSounds { get; } = new();
+    public List<CameraActorData> Cameras { get; } = new();
 
     public int TotalLightingCount =>
         DirectionalLights.Count + SkyLights.Count + PointLights.Count + SpotLights.Count +
         RectLights.Count + HeightFogs.Count + SkyAtmospheres.Count + PostProcessVolumes.Count;
+
+    public int TotalEnvironmentActors =>
+        TotalLightingCount + Decals.Count + AmbientSounds.Count + Cameras.Count;
 }
 
 public sealed class DirectionalLightData
@@ -810,3 +946,32 @@ public sealed class PostProcessData
     public float Priority { get; set; } = 1f;
     public float BlendWeight { get; set; } = 1f;
 }
+
+public sealed class DecalActorData
+{
+    public string ActorName { get; set; } = "";
+    public float[] Location { get; set; } = { 0, 0, 0 };
+    public float[] Rotation { get; set; } = { 0, 0, 0 };
+    public float[] Scale { get; set; } = { 1, 1, 1 };
+    public string? DecalMaterial { get; set; }
+    public float[] DecalSize { get; set; } = { 128, 256, 256 };
+}
+
+public sealed class AmbientSoundData
+{
+    public string ActorName { get; set; } = "";
+    public float[] Location { get; set; } = { 0, 0, 0 };
+    public string? SoundPath { get; set; }
+    public float VolumeMultiplier { get; set; } = 1f;
+    public float PitchMultiplier { get; set; } = 1f;
+}
+
+public sealed class CameraActorData
+{
+    public string ActorName { get; set; } = "";
+    public float[] Location { get; set; } = { 0, 0, 0 };
+    public float[] Rotation { get; set; } = { 0, 0, 0 };
+    public float FieldOfView { get; set; } = 90f;
+    public float AspectRatio { get; set; } = 1.777778f;
+}
+
