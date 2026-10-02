@@ -11,7 +11,7 @@ public static class Program
 {
     private static readonly HashSet<string> Verbs = new(StringComparer.OrdinalIgnoreCase)
     {
-        "inspect", "scan", "recover", "export", "graph", "validate", "doctor", "capabilities", "version"
+        "inspect", "scan", "recover", "export", "graph", "validate", "doctor", "capabilities", "version", "mcp"
     };
 
     public static async Task<int> Main(string[] args)
@@ -43,11 +43,17 @@ public static class Program
 
         var isVerbose = args.Any(a => a.Equals("--verbose", StringComparison.OrdinalIgnoreCase) || a.Equals("-v", StringComparison.OrdinalIgnoreCase));
         var logFile = ExtractOptionValue(args, "--log-file");
+        var isMcp = args.Any(a => a.Equals("mcp", StringComparison.OrdinalIgnoreCase));
 
         var logConfig = new LoggerConfiguration()
             .MinimumLevel.Is(isVerbose ? LogEventLevel.Debug : LogEventLevel.Information);
 
-        if (!args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase) || a.Equals("--json", StringComparison.OrdinalIgnoreCase)))
+        if (isMcp)
+        {
+            // For MCP stdio, send logs strictly to stderr so stdout is purely JSON-RPC messages
+            logConfig.WriteTo.Console(outputTemplate: "[{Level:u3}] {Message:lj}{NewLine}{Exception}", standardErrorFromLevel: LogEventLevel.Verbose);
+        }
+        else if (!args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase) || a.Equals("--json", StringComparison.OrdinalIgnoreCase)))
         {
             logConfig.WriteTo.Console(outputTemplate: "[{Level:u3}] {Message:lj}{NewLine}{Exception}");
         }
@@ -84,7 +90,8 @@ public static class Program
                 ValidateOptions,
                 DoctorOptions,
                 CapabilitiesOptions,
-                VersionOptions>(args)
+                VersionOptions,
+                McpOptions>(args)
                 .MapResult(
                     (InspectOptions opts) => InspectHandler.RunAsync(opts, service),
                     (ScanOptions opts) => ScanHandler.RunAsync(opts, service),
@@ -95,9 +102,11 @@ public static class Program
                     (DoctorOptions opts) => DoctorHandler.RunAsync(opts, service),
                     (CapabilitiesOptions opts) => CapabilitiesHandler.RunAsync(opts, service),
                     (VersionOptions opts) => RunVersionAsync(opts),
+                    (McpOptions opts) => McpHandler.RunAsync(opts, service),
                     _ => Task.FromResult(ExitCodes.InvalidArguments)
                 );
         }
+
 
         // Backward compatibility mode: legacy flags
         return await Task.Run(() =>
@@ -162,6 +171,7 @@ public static class Program
         table.AddRow("[bold cyan]doctor[/]", "Run environment, dependency, and storage diagnostics.");
         table.AddRow("[bold cyan]capabilities[/]", "Display the engine and asset format capability matrix.");
         table.AddRow("[bold cyan]version[/]", "Display version and build information.");
+        table.AddRow("[bold cyan]mcp[/]", "Launch Model Context Protocol (MCP) JSON-RPC stdio server for AI tools.");
 
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine("\nRun [yellow]ue4decompiler <command> --help[/] for detailed options on any command.");

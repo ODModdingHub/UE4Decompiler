@@ -18,6 +18,7 @@ public sealed class FArchiveWriter : IDisposable
 
     public void Write(int v) => _w.Write(v);
     public void Write(float v) => _w.Write(v);
+    public void Write(double v) => _w.Write(v);
     public void Write(uint v) => _w.Write(v);
     public void Write(long v) => _w.Write(v);
     public void Write(ushort v) => _w.Write(v);

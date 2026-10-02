@@ -8,6 +8,43 @@ namespace UE4Decompiler.Output.Writer;
 
 public static class MeshWriter
 {
+    public readonly record struct MeshBounds(float OriginX, float OriginY, float OriginZ,
+        float ExtentX, float ExtentY, float ExtentZ, float SphereRadius);
+
+    public static MeshBounds CalculateBounds(CStaticMeshLod lod)
+    {
+        var verts = lod.Verts ?? throw new InvalidOperationException("Static mesh LOD has no vertices");
+        if (verts.Length == 0) return default;
+
+        var minX = verts[0].Position.X; var maxX = minX;
+        var minY = verts[0].Position.Y; var maxY = minY;
+        var minZ = verts[0].Position.Z; var maxZ = minZ;
+        foreach (var v in verts)
+        {
+            var p = v.Position;
+            if (p.X < minX) minX = p.X; if (p.X > maxX) maxX = p.X;
+            if (p.Y < minY) minY = p.Y; if (p.Y > maxY) maxY = p.Y;
+            if (p.Z < minZ) minZ = p.Z; if (p.Z > maxZ) maxZ = p.Z;
+        }
+
+        var ox = (minX + maxX) * 0.5f;
+        var oy = (minY + maxY) * 0.5f;
+        var oz = (minZ + maxZ) * 0.5f;
+        var maxDistSq = 0f;
+        foreach (var v in verts)
+        {
+            var dx = v.Position.X - ox;
+            var dy = v.Position.Y - oy;
+            var dz = v.Position.Z - oz;
+            var d = dx * dx + dy * dy + dz * dz;
+            if (d > maxDistSq) maxDistSq = d;
+        }
+
+        return new MeshBounds(ox, oy, oz,
+            (maxX - minX) * 0.5f, (maxY - minY) * 0.5f, (maxZ - minZ) * 0.5f,
+            MathF.Sqrt(maxDistSq));
+    }
+
     /// <param name="materialSlotCount">Number of StaticMaterials slots the written mesh will have. Per-face material
     /// indices are clamped to [0, slotCount-1]: a section whose MaterialIndex exceeds the slot count would make the
     /// editor's scene proxy read StaticMaterials out of bounds when the mesh is placed in a level -> access violation

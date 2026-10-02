@@ -102,6 +102,15 @@ Displays version and runtime information.
 ue4decompiler version [--json]
 ```
 
+### 10. `mcp`
+Runs the Model Context Protocol (MCP) JSON-RPC 2.0 stdio server for integration with AI assistants (Claude Desktop, Cursor, Antigravity).
+
+```bash
+ue4decompiler mcp
+```
+
+For complete setup guides and available tools, see [MCP Documentation](file:///Users/bamber/Documents/GitHub/UE4Decompiler/docs/mcp.md).
+
 ---
 
 ## Exit Codes

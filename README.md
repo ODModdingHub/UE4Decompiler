@@ -17,14 +17,20 @@ UE4Decompiler restores packaged game archives (`.pak`, `.utoc/.ucas` IoStore con
 - **Dual Interfaces**:
   - **Modern CLI**: Rich command-line interface with subcommands (`inspect`, `scan`, `recover`, `export`, `graph`, `validate`, `doctor`, `capabilities`, `version`) and full backward compatibility with legacy flags.
   - **Avalonia Desktop GUI**: Dedicated desktop application featuring a container scanner, live asset browser with filters, real-time recovery progress queue, health diagnostics, and preferences.
+- **Model Context Protocol (MCP) Toolkit**:
+  - Built-in stdio MCP server (`ue4decompiler mcp`) supporting Claude Desktop, Cursor, and Antigravity.
+  - Interactive tools for container inspection, asset search, Blueprint bytecode decompilation, project recovery, and system diagnostics directly from AI developer environments.
 - **Unreal Engine 4 & 5 Parity**:
   - Full support for traditional `.pak` containers and modern UE5 IoStore (`.utoc/.ucas`) Zen containers.
   - Unversioned property schema restoration via `.usmap` mapping files.
   - UE 4.21 editor-loadable uncooked binary package writer (`FPackageFileSummary`, `FCrc` serialized name hashes, `FRawMesh` static mesh payloads).
   - High-fidelity JSON Intermediate Representation (IR) + glTF/PNG media export for UE 5.0 through 5.5.
-- **Blueprint VM Decompiler**:
+  - Advanced engine serialization fidelity: UE trailing numeric split (`FNameSplit`), case-canonical package path mapping (`PackagePathCanon`), and map built lighting registry serialization (`BuiltDataWriter`).
+- **Blueprint VM Decompiler & Node Emitter**:
   - Disassembles Kismet bytecode into human-readable Pseudo-Blueprint source code.
   - Exports visual control-flow graphs in Graphviz DOT and Mermaid diagram formats.
+  - Full `KismetGraphDecompiler` translating raw bytecodes into rich data-flow and execution pin topologies.
+  - `BlueprintNodeEmitter` synthesizing native editor K2Nodes (`K2Node_Event`, `K2Node_CallFunction`, `K2Node_VariableGet`, `K2Node_IfThenElse`, etc.) directly into uncooked packages.
   - Synthesizes clean editor-loadable Blueprint stubs to ensure projects open smoothly without engine crashes.
 - **C++ Native Stub Generation**:
   - Scans import tables for referenced native game classes and generates compilable C++ modules (`.Build.cs`, `.h`, `.cpp`) with reflected `UCLASS()` and `UPROPERTY()` macros.
@@ -95,6 +101,7 @@ ue4decompiler graph ./Game/Content/Paks /Game/Characters/BP_Hero --format mermai
 | `ue4decompiler doctor` | Run system environment, native library, and container diagnostics |
 | `ue4decompiler capabilities` | Display engine version and asset format capability matrix |
 | `ue4decompiler version` | Display tool version and runtime information |
+| `ue4decompiler mcp` | Launch Model Context Protocol stdio server for Claude Desktop, Cursor, Antigravity |
 
 *Note: All legacy flags (e.g. `--input`, `--output`, `--version`, `--aes-key`, `--decode`, `--gen-mesh-all`, etc.) remain fully supported for backward compatibility.*
 
@@ -105,16 +112,17 @@ ue4decompiler graph ./Game/Content/Paks /Game/Characters/BP_Hero --format mermai
 ```
 UE4Decompiler/
 ├── src/
-│   ├── UE4Decompiler.Core/          # DecompilerService, Reconstructors, Writers, Containers, Services
+│   ├── UE4Decompiler.Core/          # DecompilerService, Reconstructors, Writers, Containers, Services, MCP
 │   ├── UE4Decompiler.Cli/           # Spectre.Console CLI application & subcommands
 │   └── UE4Decompiler.Gui/           # Cross-platform Avalonia UI Desktop application
 ├── tests/
-│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite
+│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite (71+ tests)
 ├── lib/                             # Direct CUE4Parse and native decoding assemblies
 ├── docs/                            # Comprehensive documentation suite
 │   ├── getting-started.md           # Quickstart and setup guide
 │   ├── cli.md                       # Complete CLI reference and exit codes
 │   ├── gui.md                       # Desktop GUI walkthrough
+│   ├── mcp.md                       # Model Context Protocol (MCP) AI integration guide
 │   ├── ue4-support.md               # UE4 capabilities and uncooked package writer
 │   ├── ue5-support.md               # UE5 IoStore, Zen format, and JSON IR pipeline
 │   ├── mappings.md                  # .usmap unversioned property mapping guide
@@ -137,6 +145,7 @@ UE4Decompiler/
 For in-depth guides, see the [docs/](docs/) folder:
 - [Getting Started](docs/getting-started.md)
 - [CLI Reference](docs/cli.md)
+- [Model Context Protocol (MCP)](docs/mcp.md)
 - [Desktop GUI Guide](docs/gui.md)
 - [Unreal Engine 4 Support](docs/ue4-support.md)
 - [Unreal Engine 5 Support](docs/ue5-support.md)

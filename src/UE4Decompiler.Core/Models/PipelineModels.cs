@@ -160,13 +160,21 @@ public sealed class DecompileOptions
     public string ProjectName { get; init; } = "DecompiledProject";
     public string? MapTemplate { get; init; }
     public string? CubePath { get; init; }
+    public string? BpTemplate { get; init; }
+    public bool BpRecoverCalls { get; init; }
+    public bool EmitStubMethods { get; init; }
+    public IReadOnlyList<string> NativeSourceModules { get; init; } = Array.Empty<string>();
+    public string? NativeSourcePath { get; init; }
+    public string? ContentRootOverride { get; init; }
     public int MaxDegreeOfParallelism { get; init; } = 0; // 0 = default (ProcessorCount)
     public string? CacheDirectory { get; init; }
     public bool UseCache { get; init; } = true;
     public RecoveryProfile Profile { get; init; } = RecoveryProfile.StandardRecovery;
 
-    public string ContentRoot => Path.Combine(OutputRoot, "Content");
+    public string ContentRoot => ContentRootOverride ?? Path.Combine(OutputRoot, "Content");
 }
+
+public sealed record BlueprintReparentRequest(string BlueprintPath, string ParentClassPath, string OutputPath, string? EngineBase);
 
 /// <summary>
 /// Progress reporting payload for CLI and GUI.

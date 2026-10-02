@@ -5,6 +5,13 @@ using UE4Decompiler.Core;
 
 namespace UE4Decompiler.Output.Stubs;
 
+/// <summary>Graph-recovered stub signature: UFUNCTION params + optional return, with pin names sanitized
+/// to C++ identifiers and categories as emitted — so emitted call pins bind to the stub.
+/// StaticCall (call-site self unwired) emits a static inline method; otherwise an
+/// ImplementableEvent (no C++ body needed, links clean). Extra outputs become UPARAM(ref) out-pins.</summary>
+public sealed record StubMethodSig(List<(string Name, string Cat, byte Cont)> Params, (string Name, string Cat)? Ret, bool StaticCall,
+    List<(string Name, string Cat)>? Outs = null);
+
 /// <summary>
 /// Generates a compilable C++ stub module per game <c>/Script/&lt;Module&gt;</c> package referenced by the
 /// extracted assets, so the editor can resolve game-native classes (e.g. <c>/Script/Pavlov.PavlovLevelScriptActor</c>)
@@ -22,40 +29,78 @@ public sealed class StubModuleGenerator
 {
     private readonly Dictionary<string, char> _sdkPrefix; // bareName -> 'A'/'U'/'F'/'E'
     private IReadOnlyDictionary<string, string> _baseHints = new Dictionary<string, string>(); // "Module.Name" -> engine base
+    private Dictionary<string, SortedSet<string>> _methodHints = new(StringComparer.Ordinal); // "Module.Name" -> methods
+    private IReadOnlyDictionary<string, StubMethodSig> _methodSigs = new Dictionary<string, StubMethodSig>();
 
     public StubModuleGenerator(string? sdkDumpDir)
     {
         _sdkPrefix = sdkDumpDir is not null ? LoadSdkPrefixes(sdkDumpDir) : new();
     }
 
+    /// <summary>Delete previous runs' generated shells (marked dirs) so they neither linger nor get
+    /// mistaken for user-copied real modules. Call BEFORE discovering real modules.</summary>
+    public static void CleanMarkedStubs(string outputRoot)
+    {
+        var sourceDir = Path.Combine(outputRoot, "Source");
+        if (!Directory.Exists(sourceDir)) return;
+        foreach (var dir in Directory.EnumerateDirectories(sourceDir))
+            if (File.Exists(Path.Combine(dir, ".ue4d_stub")))
+                try { Directory.Delete(dir, recursive: true); } catch (Exception ex) { Log.Warning(ex, "Stale stub cleanup failed for {Dir}", dir); }
+    }
+
     public void Generate(string outputRoot, IReadOnlyCollection<GameStub> stubs,
-        IReadOnlyDictionary<string, string>? baseHints = null)
+        IReadOnlyDictionary<string, string>? baseHints = null,
+        IReadOnlyCollection<string>? methodHints = null,
+        IReadOnlyCollection<string>? existingModules = null,
+        IReadOnlyDictionary<string, StubMethodSig>? methodSigs = null)
     {
         _baseHints = baseHints ?? new Dictionary<string, string>();
-        if (stubs.Count == 0) { Log.Information("--emit-stubs: no game-module types referenced; nothing to generate."); return; }
+        _methodHints = ParseMethodHints(methodHints);
+        _methodSigs = methodSigs ?? new Dictionary<string, StubMethodSig>();
+        var existing = existingModules?.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                       ?? new List<string>();
+        if (stubs.Count == 0 && existing.Count == 0)
+        {
+            Log.Information("--emit-stubs: no game-module types referenced; nothing to generate.");
+            return;
+        }
 
         var uproject = Directory.EnumerateFiles(outputRoot, "*.uproject").FirstOrDefault();
         var projectName = uproject is not null ? Path.GetFileNameWithoutExtension(uproject) : "Game";
 
         var byModule = stubs.GroupBy(s => s.Module).ToDictionary(g => g.Key, g => g.ToList());
-        var moduleNames = byModule.Keys.OrderBy(m => m).ToList();
+        var moduleNames = existing.Concat(byModule.Keys).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(m => m).ToList();
         // Primary game module: prefer one matching the project name, else the first.
         var primary = moduleNames.FirstOrDefault(m => string.Equals(m, projectName, StringComparison.OrdinalIgnoreCase))
                       ?? moduleNames.First();
+
+        // Belt-and-braces with CleanMarkedStubs (Program calls it before real-module discovery):
+        // drop any marked dirs that appeared since (direct API use).
+        CleanMarkedStubs(outputRoot);
 
         var report = new StringBuilder();
         report.AppendLine($"# Stub generation report — {stubs.Count} types across {moduleNames.Count} module(s)");
         report.AppendLine($"Primary game module: {primary}").AppendLine();
 
-        foreach (var module in moduleNames)
+        foreach (var module in byModule.Keys.OrderBy(m => m))
             WriteModule(outputRoot, module, byModule[module], module == primary, report);
 
         WriteTargetFiles(outputRoot, projectName, moduleNames);
-        PatchUProject(uproject, moduleNames, primary);
+        // Do NOT register the modules in the .uproject: uncompiled C++ modules make the editor
+        // refuse to open the project ("game module could not be loaded"). The project stays
+        // Blueprint-only and opens everywhere; owners with a toolchain compile Source/ themselves
+        // (see STUBS_REPORT.md) and re-add the built modules to Modules afterwards.
+        report.AppendLine("Modules are NOT registered in the .uproject (it stays Blueprint-only so it opens");
+        report.AppendLine("without a compiler). After building Source/ in Visual Studio, re-add the module");
+        report.AppendLine("names to the .uproject \"Modules\" list (Type Runtime, LoadingPhase Default).").AppendLine();
 
         File.WriteAllText(Path.Combine(outputRoot, "STUBS_REPORT.md"), report.ToString());
-        Log.Information("--emit-stubs: generated {N} stub module(s) ({Types} types). Generate VS project files and build. See STUBS_REPORT.md",
-            moduleNames.Count, stubs.Count);
+        if (stubs.Count == 0)
+            Log.Information("--emit-stubs: registered {N} recovered native module(s); no stub types to generate. See STUBS_REPORT.md",
+                moduleNames.Count);
+        else
+            Log.Information("--emit-stubs: generated {N} stub module(s) ({Types} types). Generate VS project files and build. See STUBS_REPORT.md",
+                byModule.Count, stubs.Count);
     }
 
     private void WriteModule(string outputRoot, string module, List<GameStub> types, bool isPrimary, StringBuilder report)
@@ -63,6 +108,7 @@ public sealed class StubModuleGenerator
         var dir = Path.Combine(outputRoot, "Source", module);
         Directory.CreateDirectory(Path.Combine(dir, "Public"));
         Directory.CreateDirectory(Path.Combine(dir, "Private"));
+        File.WriteAllText(Path.Combine(dir, ".ue4d_stub"), "generated by UE4Decompiler StubModuleGenerator; safe to delete/regenerate");
 
         // ── Build.cs ──
         File.WriteAllText(Path.Combine(dir, $"{module}.Build.cs"),
@@ -90,9 +136,21 @@ public sealed class StubModuleGenerator
             "GameFramework/GameStateBase.h","GameFramework/GameUserSettings.h","GameFramework/HUD.h",
             "GameFramework/SaveGame.h","GameFramework/Volume.h","Engine/GameInstance.h","Engine/LocalPlayer.h",
             "Engine/LevelScriptActor.h","Engine/DataAsset.h","Animation/AnimInstance.h","Components/ActorComponent.h",
-            "Components/SceneComponent.h","Camera/PlayerCameraManager.h","AIController.h","Blueprint/UserWidget.h",
+            "Components/SceneComponent.h","Components/StaticMeshComponent.h","Components/LightComponent.h",
+            "Components/PointLightComponent.h","Components/SpotLightComponent.h","Components/DirectionalLightComponent.h",
+            "Camera/PlayerCameraManager.h","AIController.h","Blueprint/UserWidget.h",
         }) h.AppendLine($"#include \"{inc}\"");
         h.AppendLine($"#include \"{module}.generated.h\"").AppendLine();
+
+        // Unknown-struct shell: once per module header, project-unique name (UHT rejects same-named
+        // types even across modules).
+        string stubStruct = $"F{module}StubStruct";
+        bool moduleNeedsStubStruct = types.Any(t => t.Kind == "Class"
+            && _methodSigs.Where(kv => kv.Key.StartsWith($"{module}.{t.Name}:", StringComparison.Ordinal))
+                .Any(kv => kv.Value.Params.Any(p => p.Cat == "struct")
+                    || (kv.Value.Ret.HasValue && kv.Value.Ret.Value.Cat == "struct")));
+        if (moduleNeedsStubStruct)
+            h.AppendLine("USTRUCT(BlueprintType)").AppendLine($"struct {stubStruct} {{ GENERATED_BODY() }};").AppendLine();
 
         var classCount = 0; var structCount = 0; var enumCount = 0;
         foreach (var t in types.OrderBy(t => t.Name))
@@ -111,8 +169,66 @@ public sealed class StubModuleGenerator
                         (cpp, baseClass) = (hintBase[0] + t.Name, hintBase);   // base inferred from actual usage
                     else
                         (cpp, baseClass) = ResolveClass(t.Name);               // fall back to name-suffix heuristic
-                    h.AppendLine($"UCLASS(Blueprintable)").AppendLine($"class {cpp} : public {baseClass} {{ GENERATED_BODY() }};").AppendLine();
-                    report.AppendLine($"  [{module}] class {cpp} : {baseClass}");
+                    var key = $"{module}.{t.Name}";
+                    // Typed stubs for this class (keyed "Module.Class:func").
+                    var sigs = _methodSigs.Where(kv => kv.Key.StartsWith(key + ":", StringComparison.Ordinal))
+                        .OrderBy(kv => kv.Key).ToList();
+                    h.AppendLine("UCLASS(Blueprintable)");
+                    h.AppendLine($"class {cpp} : public {baseClass}");
+                    h.AppendLine("{");
+                    h.AppendLine("    GENERATED_BODY()");
+                    if (sigs.Count > 0)
+                    {
+                        // Typed stubs: signatures mirror the emitted call pins so they bind.
+                        h.AppendLine("public:");
+                        foreach (var kv in sigs)
+                        {
+                            var s = kv.Value;
+                            var mname = kv.Key[(kv.Key.LastIndexOf(':') + 1)..];
+                            var ret = s.Ret.HasValue ? CppType(s.Ret.Value.Cat, 0, stubStruct) : "void";
+                            var parms = new List<string>(s.Params.Select(p => $"{CppType(p.Cat, p.Cont, stubStruct)} {p.Name}"));
+                            if (s.Outs != null)
+                                foreach (var o in s.Outs)
+                                    parms.Add(s.StaticCall
+                                        ? $"{CppType(o.Cat, 0, stubStruct)}& {o.Name}"
+                                        : $"UPARAM(ref) {CppType(o.Cat, 0, stubStruct)}& {o.Name}");
+                            var parmStr = string.Join(", ", parms);
+                            if (s.StaticCall)
+                            {
+                                h.AppendLine("    UFUNCTION(BlueprintCallable, Category=\"Recovered\")");
+                                // Pointers can't value-initialize with T() — return nullptr for those.
+                                var defRet = ret.EndsWith("*") ? "nullptr" : $"{ret}()";
+                                var initOuts = s.Outs != null
+                                    ? string.Concat(s.Outs.Select(o =>
+                                    {
+                                        var ot = CppType(o.Cat, 0, stubStruct);
+                                        return $" {o.Name} = {(ot.EndsWith("*") ? "nullptr" : $"{ot}()")};";
+                                    }))
+                                    : "";
+                                h.AppendLine($"    static {ret} {mname}({parmStr}) {{{initOuts} {(s.Ret.HasValue ? $"return {defRet};" : "")} }}");
+                            }
+                            else
+                            {
+                                h.AppendLine("    UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category=\"Recovered\")");
+                                h.AppendLine($"    {ret} {mname}({parmStr});");
+                            }
+                        }
+                        report.AppendLine($"  [{module}] class {cpp} : {baseClass} ({sigs.Count} sig(s))");
+                    }
+                    else if (_methodHints.TryGetValue(key, out var methods) && methods.Count > 0)
+                    {
+                        h.AppendLine("public:");
+                        foreach (var method in methods)
+                        {
+                            h.AppendLine("    UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category=\"Recovered\")");
+                            h.AppendLine($"    void {method}();");
+                        }
+                    }
+                    h.AppendLine("};").AppendLine();
+                    if (sigs.Count == 0)
+                        report.AppendLine($"  [{module}] class {cpp} : {baseClass}" +
+                                          (_methodHints.TryGetValue(key, out var reportMethods) && reportMethods.Count > 0
+                                              ? $" ({reportMethods.Count} method stub(s))" : ""));
                     classCount++; break;
             }
         }
@@ -144,6 +260,13 @@ public sealed class StubModuleGenerator
                 public {{projectName}}Target(TargetInfo Target) : base(Target)
                 {
                     Type = TargetType.Game;
+                    DefaultBuildSettings = BuildSettingsVersion.Latest;
+                    IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+                    CppStandard = CppStandardVersion.Cpp20;
+                    // Stub project: the engine source may emit warnings under a newer toolchain (e.g. VS 2026 hits
+                    // C4668 __has_feature in engine headers). Don't fail the build on those — we only need the stub
+                    // classes to link so the editor opens.
+                    bWarningsAsErrors = false;
                     ExtraModuleNames.AddRange(new string[] { {{list}} });
                 }
             }
@@ -159,29 +282,41 @@ public sealed class StubModuleGenerator
                 public {{projectName}}EditorTarget(TargetInfo Target) : base(Target)
                 {
                     Type = TargetType.Editor;
+                    DefaultBuildSettings = BuildSettingsVersion.Latest;
+                    IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+                    CppStandard = CppStandardVersion.Cpp20;
+                    bWarningsAsErrors = false;   // tolerate engine-header warnings under newer toolchains (VS 2026 C4668)
                     ExtraModuleNames.AddRange(new string[] { {{list}} });
                 }
             }
             """);
     }
 
-    private static void PatchUProject(string? uproject, List<string> modules, string primary)
+    /// <summary>Pin category (+container) to compilable UFUNCTION C++ type. Unknown structs share one
+    /// empty per-module shell (pins drop, node still compiles); everything else binds by category.
+    /// Containers emit const-ref (UHT requires TArray/TSet/TMap params by reference).</summary>
+    private static string CppType(string cat, byte cont, string stubStruct, bool isOut = false)
     {
-        if (uproject is null) return;
-        var root = JObject.Parse(File.ReadAllText(uproject));
-        var arr = new JArray();
-        // Primary first.
-        foreach (var m in modules.OrderByDescending(m => m == primary))
+        string inner = cat switch
         {
-            arr.Add(new JObject
-            {
-                ["Name"] = m,
-                ["Type"] = "Runtime",
-                ["LoadingPhase"] = m == primary ? "Default" : "Default",
-            });
-        }
-        root["Modules"] = arr;
-        File.WriteAllText(uproject, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            "bool" => "bool",
+            "int" => "int32",
+            "float" => "float",
+            "string" => "FString",
+            "name" => "FName",
+            "text" => "FText",
+            "byte" => "uint8",
+            "object" => "UObject*",
+            // NOTE: FScriptDelegate is not a UHT-visible UFUNCTION param type (build error); untyped
+            // delegate pins ride UObject* (wire usually drops, node still compiles).
+            "delegate" => "UObject*",
+            "struct" => stubStruct,
+            _ => "int32",   // wildcard + unknown
+        };
+        if (cont == 1) return isOut ? $"TArray<{inner}>&" : $"const TArray<{inner}>&";
+        if (cont == 2) return isOut ? $"TSet<{inner}>&" : $"const TSet<{inner}>&";
+        if (cont == 3) return isOut ? "TMap<FString, FString>&" : "const TMap<FString, FString>&";
+        return inner;
     }
 
     // ── Inference ─────────────────────────────────────────────────────────────────────────────────
@@ -208,6 +343,38 @@ public sealed class StubModuleGenerator
         if (_sdkPrefix.TryGetValue(name, out var p))
             return p == 'A' ? ("A" + name, "AActor") : ("U" + name, "UObject");
         return ("U" + name, "UObject");
+    }
+
+    private static Dictionary<string, SortedSet<string>> ParseMethodHints(IReadOnlyCollection<string>? hints)
+    {
+        var map = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        if (hints is null) return map;
+        foreach (var hint in hints)
+        {
+            var colon = hint.LastIndexOf(':');
+            if (colon <= 0 || colon + 1 >= hint.Length) continue;
+            var key = hint[..colon];
+            var method = hint[(colon + 1)..];
+            if (IsDelegateSignatureFunction(method)) continue;
+            if (!IsCppIdentifier(method)) continue;
+            if (!map.TryGetValue(key, out var methods))
+                map[key] = methods = new SortedSet<string>(StringComparer.Ordinal);
+            methods.Add(method);
+        }
+        return map;
+    }
+
+    private static bool IsDelegateSignatureFunction(string name) =>
+        name.EndsWith("__DelegateSignature", StringComparison.Ordinal)
+        || name.EndsWith("_DelegateSignature", StringComparison.Ordinal);
+
+    private static bool IsCppIdentifier(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (!(value[0] == '_' || char.IsLetter(value[0]))) return false;
+        for (var i = 1; i < value.Length; i++)
+            if (!(value[i] == '_' || char.IsLetterOrDigit(value[i]))) return false;
+        return true;
     }
 
     private static string StructCpp(string name) =>

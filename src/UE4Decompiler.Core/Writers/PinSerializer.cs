@@ -6,12 +6,24 @@ public sealed class SynthPin
     public int OwningNodePkg;                 // FPackageIndex of the owning node export
     public FGuid16 PinId = FGuid16.NewGuid();
     public string PinName = "";
-    public string Category = "exec";          // PinCategory (exec / int / object / …)
+    public string Category = "exec";          // PinCategory (exec / bool / int / float / string / name / text / object / struct / wildcard / …)
     public string SubCategory = "";
     public int SubCategoryObjPkg = 0;         // FPackageIndex of PinSubCategoryObject (e.g. a class)
+    public byte ContainerType;                // EPinContainerType: 0 None, 1 Array, 2 Set, 3 Map
     public byte Direction;                    // EGPD_Input=0, EGPD_Output=1
     public string DefaultValue = "";
     public int DefaultObjPkg = 0;
+    /// <summary>PinSubCategoryMemberReference (FSimpleMemberReference). Editor ground truth fills this
+    /// on delegate pins (event CustomEvent/Event nodes reference their own function); everywhere else
+    /// it is null (None + zero guid), which is what the defaults below encode.</summary>
+    public int MemberParentPkg;
+    public string MemberName = "None";
+    public FGuid16 MemberGuid;
+    /// <summary>Trailing pin BitField (template ground truth: 1 on variable self pins, 0x10 on
+    /// advanced-view value pins, 0 elsewhere). The editor reconciles most bits; self=1 matches.</summary>
+    public uint PinBitField;
+    /// <summary>Entry user-defined pin: also written to the node's UserDefinedPins tail array.</summary>
+    public bool IsUserPin;
     public readonly List<(int owningNodePkg, FGuid16 pinId)> LinkedTo = new();
 }
 
@@ -20,19 +32,26 @@ public sealed class SynthPin
 /// (EdGraphPin.cpp). Owning-node pins write the full body; LinkedTo entries are deferred refs
 /// (bNullPtr + OwningNode + PinId). Custom versions FFrameworkObjectVersion(PinsStoreFName,
 /// EdGraphPinContainerType) are assumed present in the package (they are — Dev-Framework=34).
+///
+/// UE5 mode (<paramref name="ue5"/>): pin layout gains SourceIndex (int32, -1) after PinName
+/// (FUE5MainStreamObjectVersion.EdGraphPinSourceIndex) and bIsUObjectWrapper at the end of the
+/// pin type (FReleaseObjectVersion.PinTypeIncludesUObjectWrapperFlag). Field order mirrors
+/// CUE4Parse's FEdGraphPinType/UEdGraphPin readers, which track the editor format.
 /// </summary>
 public sealed class PinSerializer
 {
     private readonly FArchiveWriter _w;
     private readonly Func<string, int> _name;
-    public PinSerializer(FArchiveWriter w, Func<string, int> nameAdder) { _w = w; _name = nameAdder; }
+    private readonly bool _ue5;
+    public PinSerializer(FArchiveWriter w, Func<string, int> nameAdder, bool ue5 = false) { _w = w; _name = nameAdder; _ue5 = ue5; }
 
     // Empty FName fields serialize as NAME_None ("None"), NOT as an empty-string name entry —
     // injecting "" into the name table corrupts later length reads (Assertion SerializeNum>=0).
     private void FName(string s) { var n = string.IsNullOrEmpty(s) ? "None" : s; _w.Write(_name(n)); _w.Write(0); }
     private void ArchiveBool(bool b) => _w.Write(b ? 1 : 0);     // FArchive bool = int32 (4 bytes)
     private void Guid(FGuid16 g) { _w.Write(g.A); _w.Write(g.B); _w.Write(g.C); _w.Write(g.D); }
-    private void TextEmpty() { _w.Write(0u); _w.Write((byte)0xFF); }  // Flags=0, HistoryType=INDEX_NONE(-1)
+    // Empty FText: flags=0, history=None(-1), + UE5's bHasCultureInvariantString int32 (always false here).
+    private void TextEmpty() { _w.Write(0u); _w.Write((byte)0xFF); if (_ue5) _w.Write(0); }
 
     /// <summary>UEdGraphNode::Serialize writes one int32 (0) after the tagged-prop None and before the
     /// pin array (observed in ground-truth 4.21 K2Node bytes), then UEdGraphPin::SerializeAsOwningNode
@@ -49,11 +68,13 @@ public sealed class PinSerializer
         // SerializePin header (owning): bNullPtr + OwningNode + PinId
         ArchiveBool(false);
         _w.Write(p.OwningNodePkg); Guid(p.PinId);
-        // UEdGraphPin::Serialize body (note: OwningNode + PinId written AGAIN per engine)
+        // Pin body opens with OwningNode + PinId again (verified in 4.21 and 5.5 editor output).
         _w.Write(p.OwningNodePkg); Guid(p.PinId);
+        // UEdGraphPin::Serialize body
         FName(p.PinName);
         TextEmpty();                         // PinFriendlyName (editor, not filtered)
-        _w.WriteFString("");                 // PinToolTip
+        if (_ue5) _w.Write(-1);              // SourceIndex (UE5+, INDEX_NONE on template pins)
+        _w.WriteFString("");                 // PinToolTip (empty)
         _w.Write(p.Direction);               // TEnumAsByte (1 byte)
         WritePinType(p);
         _w.WriteFString(p.DefaultValue);     // DefaultValue
@@ -67,21 +88,36 @@ public sealed class PinSerializer
         ArchiveBool(true);                   // ParentPin = null (bNullPtr=true)
         ArchiveBool(true);                   // ReferencePassThroughConnection = null
         Guid(FGuid16.NewGuid());             // PersistentGuid
-        _w.Write(0u);                        // BitField (hidden/notConnectable/… = 0)
+        _w.Write(p.PinBitField);               // BitField (hidden/advanced/… template-matched)
     }
+
+    /// <summary>One FUserPinInfo (UK2Node_EditablePinBase::Serialize tail): PinName + PinType +
+    /// DesiredPinDirection (TEnumAsByte) + PinDefaultValue. Declaration order per the header.</summary>
+    public void WriteUserPinInfo(SynthPin p)
+    {
+        FName(p.PinName);
+        WritePinType(p);
+        _w.Write(p.Direction);
+        _w.WriteFString("");
+    }
+
+    /// <summary>Raw 69-byte UE5 FEdGraphPinType value (FBPVariableDescription.VarType ground truth).</summary>
+    public void WritePinTypeRaw(SynthPin p) => WritePinType(p);
 
     private void WritePinType(SynthPin p)
     {
         FName(p.Category);                   // PinCategory
         FName(p.SubCategory);                // PinSubCategory
         _w.Write(p.SubCategoryObjPkg);       // PinSubCategoryObject (objref)
-        _w.Write((byte)0);                   // ContainerType (EPinContainerType::None)
+        _w.Write(p.ContainerType);           // ContainerType (EPinContainerType byte)
         ArchiveBool(false);                  // bIsReference
         ArchiveBool(false);                  // bIsWeakPointer
         // PinSubCategoryMemberReference (FSimpleMemberReference): MemberParent + MemberName + MemberGuid
-        _w.Write(0);                         // MemberParent (objref null)
-        FName("None");                       // MemberName
-        Guid(default);                       // MemberGuid (zero)
+        _w.Write(p.MemberParentPkg);          // MemberParent (objref, 0 = null)
+        FName(p.MemberName);                  // MemberName
+        Guid(p.MemberGuid);                   // MemberGuid (zero when unbound)
         ArchiveBool(false);                  // bIsConst
+        if (_ue5) ArchiveBool(false);        // bIsUObjectWrapper (UE5+)
+        if (_ue5) ArchiveBool(false);        // bSerializeAsSinglePrecisionFloat (UE5+)
     }
 }

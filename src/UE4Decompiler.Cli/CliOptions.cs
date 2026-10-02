@@ -184,6 +184,14 @@ public sealed class VersionOptions : BaseCliOptions
 {
 }
 
+[Verb("mcp", HelpText = "Launch Model Context Protocol (MCP) JSON-RPC stdio server for AI tools.")]
+public sealed class McpOptions : BaseCliOptions
+{
+    [Option("stdio", Default = true, HelpText = "Communicate via standard input/output streams.")]
+    public bool Stdio { get; set; } = true;
+}
+
+
 /// <summary>
 /// Backward-compatible legacy flag model.
 /// </summary>

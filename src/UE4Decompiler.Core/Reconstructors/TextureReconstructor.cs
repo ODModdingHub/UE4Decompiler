@@ -19,18 +19,45 @@ public sealed class TextureReconstructor
         if (texture is null)
             return ReconstructionResult.Failed("No UTexture2D export found");
 
+        return ExportOne(texture, Path.GetDirectoryName(outputPathNoExt)!,
+            Path.GetFileNameWithoutExtension(outputPathNoExt));
+    }
+
+    /// <summary>Export one texture to dir/name.png + dir/name.json (settings sidecar for the re-import
+    /// + texfix passes). Skips work when both files already exist (incremental dumps stay fast).</summary>
+    public static ReconstructionResult ExportOne(UTexture2D texture, string dir, string name)
+    {
+        Directory.CreateDirectory(dir);
+        var pngPath = Path.Combine(dir, name + ".png");
+        var jsonPath = Path.Combine(dir, name + ".json");
+        if (File.Exists(pngPath) && File.Exists(jsonPath) && new FileInfo(jsonPath).Length > 0)
+        {
+            // Return the existing sidecar as the model so the caller (Newtonsoft-based WriteJsonModel)
+            // doesn't overwrite good metadata with a stub (incremental dumps must not clobber
+            // SRGB/compression settings). Stub sidecars (from before this guard) fall through to full
+            // re-extraction below.
+            try
+            {
+                var jo = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(jsonPath));
+                if (jo["SRGB"] != null && jo["CompressionSettings"] != null)
+                {
+                    var skipped = new ReconstructionResult { Fidelity = Fidelity.Full, Model = jo };
+                    skipped.SidecarFiles.Add(Path.GetFileName(pngPath));
+                    return skipped;
+                }
+            }
+            catch { }
+        }
         try
         {
-            var decoded = texture.Decode(ETexturePlatform.DesktopMobile); // largest valid mip
+            var decoded = TextureDecoder.Decode(texture, ETexturePlatform.DesktopMobile); // largest valid mip
             if (decoded is null)
                 return new ReconstructionResult { Fidelity = Fidelity.Stub, Note = "Mip data missing/streamed-out; settings preserved" };
 
-            using var bitmap = decoded.ToSkBitmap();
+            using var bitmap = TextureEncoder.ToSkBitmap(decoded);
             using var image = SKImage.FromBitmap(bitmap);
             using var data = image.Encode(SKEncodedImageFormat.Png, 100);
 
-            var pngPath = outputPathNoExt + ".png";
-            Directory.CreateDirectory(Path.GetDirectoryName(pngPath)!);
             using (var stream = File.Create(pngPath))
                 data.SaveTo(stream);
 
@@ -45,10 +72,14 @@ public sealed class TextureReconstructor
                 Filter = texture.Filter.ToString(),
                 texture.IsNormalMap,
                 IsHDR = texture.IsHDR,
-                Properties = texture.Properties // preserve raw property tags
+                // NOTE: texture.Properties is deliberately excluded — CUE4Parse property graphs are not
+                // System.Text.Json-serializable (throws, leaving a 0KB sidecar that breaks the import filter).
             };
 
-            Log.Information("Texture {Name}: wrote {W}x{H} PNG", texture.Name, bitmap.Width, bitmap.Height);
+            Log.Information("Texture {Name}: wrote {W}x{H} PNG  [fmt={Fmt} srgb={SRGB} comp={Comp} normal={NM} colortype={CT}]",
+                texture.Name, bitmap.Width, bitmap.Height, texture.Format, texture.SRGB, texture.CompressionSettings, texture.IsNormalMap, bitmap.ColorType);
+            File.WriteAllText(jsonPath, System.Text.Json.JsonSerializer.Serialize(model,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
             var result = new ReconstructionResult { Fidelity = Fidelity.Full, Model = model };
             result.SidecarFiles.Add(Path.GetFileName(pngPath));
             return result;
