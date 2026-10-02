@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using UE4Decompiler.Core.Services;
+using UE4Decompiler.Gui.Services;
 
 namespace UE4Decompiler.Gui.ViewModels;
 
@@ -10,10 +11,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private ViewModelBase _currentPage;
 
     [ObservableProperty]
-    private string _statusText = "UE4Decompiler ready.";
+    private string _statusText = "Ready";
 
     public HomeViewModel HomeVm { get; }
     public AssetBrowserViewModel AssetBrowserVm { get; }
+    public GraphViewModel GraphVm { get; }
     public JobQueueViewModel JobQueueVm { get; }
     public DoctorViewModel DoctorVm { get; }
     public SettingsViewModel SettingsVm { get; }
@@ -21,9 +23,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public MainWindowViewModel()
     {
         var service = new DecompilerService();
+        var fileDialogService = new AvaloniaFileDialogService();
+        var clipboardService = new AvaloniaClipboardService();
 
-        HomeVm = new HomeViewModel(service, this);
-        AssetBrowserVm = new AssetBrowserViewModel();
+        HomeVm = new HomeViewModel(service, this, fileDialogService);
+        AssetBrowserVm = new AssetBrowserViewModel(this, clipboardService);
+        GraphVm = new GraphViewModel(clipboardService, fileDialogService);
         JobQueueVm = new JobQueueViewModel(service);
         DoctorVm = new DoctorViewModel(service);
         SettingsVm = new SettingsViewModel();
@@ -36,6 +41,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     [RelayCommand]
     public void NavigateBrowser() => CurrentPage = AssetBrowserVm;
+
+    [RelayCommand]
+    public void NavigateGraph() => CurrentPage = GraphVm;
 
     [RelayCommand]
     public void NavigateQueue() => CurrentPage = JobQueueVm;
