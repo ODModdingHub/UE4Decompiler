@@ -1,0 +1,109 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:UE4Decompiler.Gui.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="700"
+             x:Class="UE4Decompiler.Gui.Views.HomeView"
+             x:DataType="vm:HomeViewModel">
+
+    <ScrollViewer>
+        <StackPanel Margin="30" Spacing="18" MaxWidth="920">
+            <!-- Header -->
+            <Border Background="#1E232B" CornerRadius="8" Padding="22" BorderBrush="#2D333B" BorderThickness="1">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="UE4Decompiler" FontSize="24" FontWeight="Bold" Foreground="#4ADE80" />
+                    <TextBlock Text="Unreal Engine Asset Recovery Suite" FontSize="13" Foreground="#94A3B8" />
+                    <TextBlock Text="Mount UE4 &amp; UE5 containers (.pak, .utoc/.ucas) or cooked directories to inspect packages and reconstruct editor-ready assets."
+                               FontSize="12" Foreground="#64748B" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- Configuration Card -->
+            <Border Background="#181C22" CornerRadius="8" Padding="20" BorderBrush="#262C36" BorderThickness="1">
+                <StackPanel Spacing="16">
+                    <TextBlock Text="Container &amp; Workspace Setup" FontSize="15" FontWeight="Bold" Foreground="#E2E8F0" />
+
+                    <!-- Input Path -->
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Input Container or Content Directory:" FontSize="12" Foreground="#94A3B8" />
+                        <Grid ColumnDefinitions="*, 8, Auto, 6, Auto">
+                            <TextBox Grid.Column="0" Text="{Binding InputPath}" Watermark="/path/to/game/Paks or Game.pak / Game.utoc" />
+                            <Button Grid.Column="2" Content="Browse File..." Command="{Binding BrowseInputFileCommand}" Padding="12,6" />
+                            <Button Grid.Column="4" Content="Browse Folder..." Command="{Binding BrowseInputFolderCommand}" Padding="12,6" />
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Output Path -->
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Output Project Root Directory:" FontSize="12" Foreground="#94A3B8" />
+                        <Grid ColumnDefinitions="*, 8, Auto">
+                            <TextBox Grid.Column="0" Text="{Binding OutputPath}" Watermark="/path/to/RecoveredProject" />
+                            <Button Grid.Column="2" Content="Browse..." Command="{Binding BrowseOutputFolderCommand}" Padding="12,6" />
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Engine & Security Grid -->
+                    <Grid ColumnDefinitions="*, 16, *">
+                        <StackPanel Grid.Column="0" Spacing="6">
+                            <TextBlock Text="Target Engine Version:" FontSize="12" Foreground="#94A3B8" />
+                            <ComboBox ItemsSource="{Binding AvailableEngines}" SelectedItem="{Binding SelectedEngine}" HorizontalAlignment="Stretch" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" Spacing="6">
+                            <TextBlock Text="AES-256 Encryption Key (Hex 0x...):" FontSize="12" Foreground="#94A3B8" />
+                            <TextBox Text="{Binding AesKey}" Watermark="0x0000000000000000000000000000000000000000000000000000000000000000" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Mapping (.usmap) -->
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Unversioned Property Mapping (.usmap, optional):" FontSize="12" Foreground="#94A3B8" />
+                        <Grid ColumnDefinitions="*, 8, Auto">
+                            <TextBox Grid.Column="0" Text="{Binding MappingPath}" Watermark="/path/to/Mappings.usmap" />
+                            <Button Grid.Column="2" Content="Browse..." Command="{Binding BrowseMappingFileCommand}" Padding="12,6" />
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Action Buttons -->
+                    <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,8,0,0">
+                        <Button Content="Scan Containers" Command="{Binding ScanContainersCommand}"
+                                IsEnabled="{Binding !IsScanning}" Padding="18,8" />
+                        <Button Content="Start Recovery" Command="{Binding StartRecoveryCommand}"
+                                Background="#16A34A" Foreground="White" FontWeight="Bold" Padding="24,8" />
+                        <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsScanning}" Width="120" Height="4" VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Status Banner -->
+            <Border Background="#1E232B" CornerRadius="6" Padding="12" BorderBrush="#2D333B" BorderThickness="1">
+                <TextBlock Text="{Binding StatusMessage}" Foreground="#4ADE80" TextWrapping="Wrap" FontSize="12" />
+            </Border>
+
+            <!-- Discovered Containers -->
+            <Border Background="#181C22" CornerRadius="8" Padding="18" BorderBrush="#262C36" BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <Grid ColumnDefinitions="*, Auto">
+                        <TextBlock Grid.Column="0" Text="Discovered Containers" FontSize="14" FontWeight="Bold" Foreground="#E2E8F0" />
+                        <TextBlock Grid.Column="1" Text="{Binding ContainerSummary}" FontSize="12" Foreground="#94A3B8" />
+                    </Grid>
+
+                    <ListBox ItemsSource="{Binding Containers}" MaxHeight="180">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="90, *, 120" Margin="0,2">
+                                    <Border Grid.Column="0" Background="#262C36" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                        <TextBlock Text="{Binding Type}" FontWeight="Bold" FontSize="10" Foreground="#4ADE80" HorizontalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Grid.Column="1" Text="{Binding FilePath}" TextTrimming="CharacterEllipsis" Margin="8,0" VerticalAlignment="Center" FontSize="12" />
+                                    <TextBlock Grid.Column="2" Text="{Binding MountPoint}" Foreground="#64748B" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

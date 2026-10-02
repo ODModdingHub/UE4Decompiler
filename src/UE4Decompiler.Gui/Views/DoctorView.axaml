@@ -1,0 +1,41 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:UE4Decompiler.Gui.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+             x:Class="UE4Decompiler.Gui.Views.DoctorView"
+             x:DataType="vm:DoctorViewModel">
+
+    <Grid RowDefinitions="Auto, *" Margin="24">
+        <!-- Header Card -->
+        <Border Grid.Row="0" Background="#252A30" CornerRadius="8" Padding="20" Margin="0,0,0,16">
+            <Grid ColumnDefinitions="*, Auto">
+                <StackPanel Grid.Column="0" Spacing="6">
+                    <TextBlock Text="System Health &amp; Environment Diagnostics" FontSize="18" FontWeight="Bold" />
+                    <TextBlock Text="{Binding OverallStatus}" FontSize="13" Foreground="#A0A0A0" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="Run Health Diagnostics" Command="{Binding RunDiagnosticsCommand}"
+                        IsEnabled="{Binding !IsRunning}" Background="#2E7D32" Foreground="White" Padding="16,8" />
+            </Grid>
+        </Border>
+
+        <!-- Diagnostics Results List -->
+        <Border Grid.Row="1" Background="#20242A" CornerRadius="8" Padding="16">
+            <ListBox ItemsSource="{Binding DiagnosticItems}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="#252A30" CornerRadius="6" Padding="12" Margin="0,4">
+                            <Grid ColumnDefinitions="100, 180, 80, *">
+                                <TextBlock Grid.Column="0" Text="{Binding Category}" Foreground="#808080" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="{Binding CheckName}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="2" Text="{Binding Level}" Foreground="#4E9A06" FontWeight="Bold" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="3" Text="{Binding Message}" Foreground="#C0C0C0" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+    </Grid>
+</UserControl>

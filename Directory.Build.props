@@ -1,0 +1,81 @@
+<Project>
+  <PropertyGroup>
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <Product>UE4Decompiler</Product>
+    <Company>UE4Decompiler Contributors</Company>
+    <Authors>UE4Decompiler Contributors</Authors>
+    <Description>Unreal Engine 4 &amp; 5 Asset Recovery Pipeline</Description>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj')">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="!Exists('$(MSBuildThisFileDirectory)..\CUE4Parse\CUE4Parse\CUE4Parse.csproj')">
+    <Reference Include="CUE4Parse">
+      <HintPath>$(MSBuildThisFileDirectory)lib\CUE4Parse.dll</HintPath>
+    </Reference>
+    <Reference Include="CUE4Parse-Conversion">
+      <HintPath>$(MSBuildThisFileDirectory)lib\CUE4Parse-Conversion.dll</HintPath>
+    </Reference>
+    <Reference Include="AssetRipper.TextureDecoder">
+      <HintPath>$(MSBuildThisFileDirectory)lib\AssetRipper.TextureDecoder.dll</HintPath>
+    </Reference>
+    <Reference Include="Blake3">
+      <HintPath>$(MSBuildThisFileDirectory)lib\Blake3.dll</HintPath>
+    </Reference>
+    <Reference Include="Fmod5Sharp">
+      <HintPath>$(MSBuildThisFileDirectory)lib\Fmod5Sharp.dll</HintPath>
+    </Reference>
+    <Reference Include="GenericReader">
+      <HintPath>$(MSBuildThisFileDirectory)lib\GenericReader.dll</HintPath>
+    </Reference>
+    <Reference Include="IndexRange">
+      <HintPath>$(MSBuildThisFileDirectory)lib\IndexRange.dll</HintPath>
+    </Reference>
+    <Reference Include="K4os.Compression.LZ4">
+      <HintPath>$(MSBuildThisFileDirectory)lib\K4os.Compression.LZ4.dll</HintPath>
+    </Reference>
+    <Reference Include="K4os.Compression.LZ4.Streams">
+      <HintPath>$(MSBuildThisFileDirectory)lib\K4os.Compression.LZ4.Streams.dll</HintPath>
+    </Reference>
+    <Reference Include="K4os.Hash.xxHash">
+      <HintPath>$(MSBuildThisFileDirectory)lib\K4os.Hash.xxHash.dll</HintPath>
+    </Reference>
+    <Reference Include="OffiUtils">
+      <HintPath>$(MSBuildThisFileDirectory)lib\OffiUtils.dll</HintPath>
+    </Reference>
+    <Reference Include="OggVorbisEncoder">
+      <HintPath>$(MSBuildThisFileDirectory)lib\OggVorbisEncoder.dll</HintPath>
+    </Reference>
+    <Reference Include="Oodle.NET">
+      <HintPath>$(MSBuildThisFileDirectory)lib\Oodle.NET.dll</HintPath>
+    </Reference>
+    <Reference Include="SevenZip">
+      <HintPath>$(MSBuildThisFileDirectory)lib\SevenZip.dll</HintPath>
+    </Reference>
+    <Reference Include="SharpGLTF.Core">
+      <HintPath>$(MSBuildThisFileDirectory)lib\SharpGLTF.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="SharpGLTF.Toolkit">
+      <HintPath>$(MSBuildThisFileDirectory)lib\SharpGLTF.Toolkit.dll</HintPath>
+    </Reference>
+    <Reference Include="SubstreamSharp">
+      <HintPath>$(MSBuildThisFileDirectory)lib\SubstreamSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="UE4Config">
+      <HintPath>$(MSBuildThisFileDirectory)lib\UE4Config.dll</HintPath>
+    </Reference>
+    <Reference Include="VGAudio">
+      <HintPath>$(MSBuildThisFileDirectory)lib\VGAudio.dll</HintPath>
+    </Reference>
+    <Reference Include="Zlib-ng.NET">
+      <HintPath>$(MSBuildThisFileDirectory)lib\Zlib-ng.NET.dll</HintPath>
+    </Reference>
+    <Reference Include="ZstdSharp">
+      <HintPath>$(MSBuildThisFileDirectory)lib\ZstdSharp.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

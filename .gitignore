@@ -1,0 +1,36 @@
+# Build & Intermediate Output
+bin/
+obj/
+publish/
+dist/
+artifacts/
+TestResults/
+coverage/
+
+# IDE & Editor Files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.pidb
+
+# Caches & Temporary Files
+*.cache
+*.log
+*.tmp
+
+# Operating System Metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Game Archives & Decryption Keys (Never commit copyrighted assets or keys)
+*.pak
+*.utoc
+*.ucas
+*.sig
+*.usmap
+recovered-output/
+DecompiledProject/

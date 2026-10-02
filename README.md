@@ -1,145 +1,194 @@
 # UE4Decompiler
 
-A .NET 8 console tool that takes **cooked** Unreal Engine 4/5 game files and produces an
-openable `.uproject` with recovered, uncooked-style assets. Built around
-[CUE4Parse](https://github.com/FabianFG/CUE4Parse) as the core parsing library.
+[![CI](https://github.com/alphasayshello/UE4Decompiler/actions/workflows/ci.yml/badge.svg)](https://github.com/alphasayshello/UE4Decompiler/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![.NET 8.0](https://img.shields.io/badge/.NET-8.0-purple.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 
-> Intended for modding, asset research, education, and recovering your own projects. Respect the
-> IP/EULA of any content you process.
+A polished, cross-platform Unreal Engine 4 and Unreal Engine 5 asset recovery and decompilation pipeline for Windows, Linux, and macOS. Built with .NET 8, [Spectre.Console](https://spectreconsole.net/), and [Avalonia UI](https://avaloniaui.net/).
 
-## Build
+UE4Decompiler restores packaged game archives (`.pak`, `.utoc/.ucas` IoStore containers, and cooked `.uasset` files) into clean, editable Unreal Engine projects complete with `.uproject`, project configurations, plugin mounts, native C++ stub modules, and standard digital content creation interchange assets (glTF 2.0, PNG, WAV, JSON IR).
 
-The local CUE4Parse source must sit next to this project (it does in this repo):
+---
 
-```
-CUE4ProjectGenerator/
-├── CUE4Parse/            ← cloned CUE4Parse solution
-└── UE4Decompiler/        ← this project
-```
+## Key Features
 
-```sh
+- **Cross-Platform**: First-class support for Windows (x64/arm64), Linux, and macOS (Apple Silicon & Intel).
+- **Dual Interfaces**:
+  - **Modern CLI**: Rich command-line interface with subcommands (`inspect`, `scan`, `recover`, `export`, `graph`, `validate`, `doctor`, `capabilities`, `version`) and full backward compatibility with legacy flags.
+  - **Avalonia Desktop GUI**: Dedicated desktop application featuring a container scanner, live asset browser with filters, real-time recovery progress queue, health diagnostics, and preferences.
+- **Model Context Protocol (MCP) Toolkit**:
+  - Built-in stdio MCP server (`ue4decompiler mcp`) with **34 autonomous AI tools** supporting Claude Desktop, Cursor, and Antigravity.
+  - Interactive tools for container inspection, asset search, Blueprint bytecode decompilation, project recovery, UMG widgets, physics assets, Niagara/Cascade VFX, Gameplay Ability System (GAS), foliage, terrains/landscapes, subsurface scattering, media framework, audio routing graphs, level streaming manifests, and IK rigs.
+- **Deep Asset Reconstructors & Pipeline Recovery**:
+  - **Landscapes & Terrains**: `ALandscape`, `ALandscapeStreamingProxy`, `ULandscapeComponent` grid layout recovery (section quads, subsections), heightmap textures, weightmap layer blend allocations, and `ULandscapeLayerInfoObject` configuration.
+  - **Subsurface Scattering Profiles**: `USubsurfaceProfile` optical recovery (scatter radius, falloff, boundary color bleed, extinction, dual specular roughness, Burley diffusion).
+  - **Media Framework**: `UFileMediaSource`, `UStreamMediaSource`, `UMediaPlayer`, `UMediaTexture` video paths, playback settings, and material bindings.
+  - **Comprehensive Audio Routing**: `USoundWave` PCM decoding, `USoundCue` node graphs, `USoundAttenuation` distance models, `USoundClass` volume/pitch/LPF hierarchies, `USoundSubmix` effect chains, and `USoundMix` ducking matrices.
+  - **Level Streaming & World Partition**: Sublevel manifests, transforms, initial load/visibility flags, and data layer references.
+  - **IK Rig & Animation Retargeting**: UE5 `UIKRigDefinition` bone chains and solver goals; `UIKRetargeter` asset mapping.
+  - **Engine Scalability & Configuration**: Scaffolds `DefaultScalability.ini`, `DefaultDeviceProfiles.ini`, `DefaultGameplayTags.ini`, and `DefaultEngine.ini` collision/physics surfaces.
+  - **UMG Widget Blueprints & WidgetTrees**: Hierarchical UI layout recovery, slot geometry (canvas anchors/offsets), styling, fonts, and C++ `UPROPERTY(meta = (BindWidget))` scaffolding.
+  - **Physics & Ragdoll Assets**: Deep `UPhysicsAsset` skeletal collision bodies (spheres/boxes/capsules/convex) and joint constraints; `UPhysicalMaterial` with automated `DefaultEngine.ini` physical surface scaffolding.
+  - **Niagara & Cascade VFX**: Reconstructs `UNiagaraSystem` user parameters, emitters, simulation targets, and renderers; legacy `UParticleSystem` modules.
+  - **Gameplay Ability System (GAS)**: `UAttributeSet` attribute discovery with compilable C++ `ATTRIBUTE_ACCESSORS` stubs; `UGameplayEffect` and `UGameplayAbility` recovery.
+  - **Foliage & Environment**: `UFoliageType` mesh bindings, density, radius, scaling rules, and collision profiles.
+  - **Animation & Skeletal Meshes**: Skeletons, animation sequences, montages, blend spaces, and sockets.
+  - **Level & World Lighting**: BuiltData registry, lighting profiles, and master Python batch runner (`ReconstructAllLevels.py`).
+- **Unreal Engine 4 & 5 Parity**:
+  - Full support for traditional `.pak` containers and modern UE5 IoStore (`.utoc/.ucas`) Zen containers.
+  - Unversioned property schema restoration via `.usmap` mapping files.
+  - UE 4.21 editor-loadable uncooked binary package writer (`FPackageFileSummary`, `FCrc` serialized name hashes, `FRawMesh` static mesh payloads).
+  - High-fidelity JSON Intermediate Representation (IR) + glTF/PNG media export for UE 5.0 through 5.5.
+  - Advanced engine serialization fidelity: UE trailing numeric split (`FNameSplit`), case-canonical package path mapping (`PackagePathCanon`), and map built lighting registry serialization (`BuiltDataWriter`).
+- **Blueprint VM Decompiler & Node Emitter**:
+  - Disassembles Kismet bytecode into human-readable Pseudo-Blueprint source code.
+  - Exports visual control-flow graphs in Graphviz DOT and Mermaid diagram formats.
+  - Full `KismetGraphDecompiler` translating raw bytecodes into rich data-flow and execution pin topologies.
+  - `BlueprintNodeEmitter` synthesizing native editor K2Nodes (`K2Node_Event`, `K2Node_CallFunction`, `K2Node_VariableGet`, `K2Node_IfThenElse`, etc.) directly into uncooked packages.
+  - Synthesizes clean editor-loadable Blueprint stubs to ensure projects open smoothly without engine crashes.
+- **C++ Native Stub Generation**:
+  - Scans import tables for referenced native game classes and generates compilable C++ modules (`.Build.cs`, `.h`, `.cpp`) with reflected `UCLASS()` and `UPROPERTY()` macros.
+- **Automated Validation & Diagnostics**:
+  - Built-in `validate` command checks package tags, summaries, and deserialization.
+  - Built-in `doctor` command verifies .NET runtime environment, SkiaSharp native libraries, container integrity, and write permissions.
+
+---
+
+## Quick Start
+
+### Prerequisites
+- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+### 1. Build the Solution
+```bash
+git clone https://github.com/alphasayshello/UE4Decompiler.git
 cd UE4Decompiler
-dotnet build -c Release
+
+dotnet build UE4Decompiler.sln -c Release
 ```
 
-## Usage
-
-```sh
-UE4Decompiler.exe \
-  --input   "C:/Game/Content/Paks/pakchunk0-WindowsNoEditor.pak" \
-  --output  "C:/Output/MyProject" \
-  --version "4.27"            # optional, auto-detected if omitted
-  --aes-key "0xABCD..."       # optional, omit if unencrypted
-  --filter  "Characters/**"   # optional glob over virtual paths
-  --skip-blueprints           # optional: blueprint metadata stubs only
-  --full-recovery             # optional: emit Kismet bytecode + anim-graph order for the re-import commandlet
-  --dry-run                   # optional: list, don't write
-  --report                    # optional: emit decompile-report.json
-  --verbose
+### 2. Run Automated Tests
+```bash
+dotnet test tests/UE4Decompiler.Tests/UE4Decompiler.Tests.csproj
 ```
 
-## What it produces
-
-```
-MyProject/
-├── MyProject.uproject
-├── Config/{DefaultEngine,DefaultGame,DefaultEditor}.ini
-├── decompile-report.json          # with --report
-└── Content/<mirrored pak tree>/
-    ├── Foo.uasset                 # structurally-valid uncooked header (placeholder)
-    ├── Foo.json                   # full recovered model (source of truth)
-    ├── Foo.png                    # textures decoded to source PNG
-    └── Bar.glb                    # meshes exported as glTF 2.0
+### 3. Launch the Desktop GUI
+```bash
+dotnet run --project src/UE4Decompiler.Gui/UE4Decompiler.Gui.csproj
 ```
 
-## Reconstruction fidelity
+### 4. Use the CLI
+```bash
+# Verify system health
+ue4decompiler doctor
 
-| Asset type            | Fidelity | How |
-|-----------------------|----------|-----|
-| Material / MIC        | **Full** | Expression graph (nodes, pins, params) survives cooking and is parsed directly |
-| Texture2D / Cube      | **Full** | Largest mip decoded (BC1-7/ASTC/etc.) → source PNG; SRGB/compression/filter preserved |
-| Static / Skeletal Mesh| Partial  | LOD0 geometry (verts/indices/UVs/normals, bones, morphs) → glTF 2.0 for re-import |
-| World / Level (.umap) | Partial  | Actors, components, transforms placed; streaming refs kept as soft paths |
-| Blueprint             | Stub     | Kismet bytecode pattern-matched to K2 nodes; unmapped opcodes become commented stubs |
-| SoundWave             | Copied   | Model preserved; raw PCM/OGG bulk left as-is |
-| Other                 | Partial  | Full property model preserved as JSON |
-| Parse failure         | Failed   | Placeholder header + metadata so the project still opens |
+# Inspect a container
+ue4decompiler inspect ./Game/Content/Paks/Game-WindowsNoEditor.pak
 
-## Editor-loadable uncooked writer
+# Recover full uncooked project
+ue4decompiler recover ./Game/Content/Paks \
+  --output ./RecoveredProject \
+  --engine 4.27 \
+  --aes-key 0x1234567890ABCDEF...
 
-For UE 4.21 targets, the tool emits **genuine editor-loadable uncooked `.uasset` files** via a
-hand-rolled package serializer ([Output/Writer/](Output/Writer/)) grounded in the engine source:
+# Export media assets directly (glTF meshes, PNG textures)
+ue4decompiler export ./Game/Content/Paks \
+  --output ./ExportedMedia \
+  --textures --meshes
 
-- Rebuilds the package framework (summary + name/import/export tables) for the **single-file**
-  uncooked layout, with correct `FNameEntrySerialized` hashes (`FCrc` port).
-- Reuses the verbatim name table and **copies the real tagged-property payloads** (the format is
-  identical cooked↔uncooked), relocating them out of the split `.uexp`, and **clears the cooked
-  flags** (`PKG_Cooked` / `PKG_FilterEditorOnly`).
-- Preserves the source's versioning + custom-version container so payloads deserialize identically.
-- Field order is generated from the same version gates CUE4Parse's reader uses, so writer↔reader
-  can't drift across engine versions.
+# Decompile a Blueprint to Mermaid
+ue4decompiler graph ./Game/Content/Paks /Game/Characters/BP_Hero --format mermaid
+```
 
-Validated by round-tripping output back through CUE4Parse (`--validate-write "<ObjectPath>"`):
-property-only assets and a 17-export blueprint (BlueprintGeneratedClass + CDO + functions +
-components) re-parse with matching classes and properties.
+---
 
-**Eligibility is a verified whitelist** (audit finding [9.1]): only classes whose editor-mode
-`Serialize` consumes exactly the cooked `SerialSize` — pure tagged-property classes (curves,
-data/material/particle assets) plus the verified `UStruct`/`UClass`/BlueprintGeneratedClass family —
-are emitted as real packages. Everything else (and any package containing a hard-excluded
-bulk/native class: textures, meshes, sounds, **AnimSequence**, fonts, …) **falls back to a
-placeholder header**, because a class with `!IsFilterEditorOnly()` native serialization or `.ubulk`
-payloads would trip the loader's `Fatal` `SerialSize` mismatch. The `.json` + PNG/glb sidecars
-remain the recovery path for excluded types. Cooked-class payloads additionally have their
-`bCooked` flag patched to `false` so the editor treats imported blueprint classes as uncooked.
+## CLI Command Overview
 
-## Other limitations (by design)
-- Blueprint recovery is best-effort: "opens with most logic visible", not a byte-perfect round-trip.
-- Shader bytecode → HLSL is **not** attempted; shader caches are out of scope.
-- `/Engine/` content is **never** copied — only referenced via soft paths.
-- Audio is copied as raw bulk, not transcoded.
+| Command | Purpose |
+| :--- | :--- |
+| `ue4decompiler inspect <file\|dir>` | Inspect container metadata, compression, encryption, and package counts |
+| `ue4decompiler scan <dir>` | Scan a directory for containers and enumerate all virtual assets |
+| `ue4decompiler recover <input> -o <dir>` | Recover assets into an uncooked Unreal Engine project |
+| `ue4decompiler export <input> -o <dir>` | Export assets to standard interchange formats (GLB, PNG, WAV, JSON) |
+| `ue4decompiler graph <input> <asset>` | Decompile Blueprint Kismet bytecode into graph visualization or pseudo-code |
+| `ue4decompiler validate <output-dir>` | Validate recovered asset packages and models on disk |
+| `ue4decompiler doctor` | Run system environment, native library, and container diagnostics |
+| `ue4decompiler capabilities` | Display engine version and asset format capability matrix |
+| `ue4decompiler version` | Display tool version and runtime information |
+| `ue4decompiler mcp` | Launch Model Context Protocol stdio server for Claude Desktop, Cursor, Antigravity |
 
-## Full-recovery JSON contract (`--full-recovery`)
+*Note: All legacy flags (e.g. `--input`, `--output`, `--version`, `--aes-key`, `--decode`, `--gen-mesh-all`, etc.) remain fully supported for backward compatibility.*
 
-For editor-loadable reconstruction, a companion UE editor commandlet (`JsonAssetImport`) consumes
-the JSON sidecars. `--full-recovery` enriches Blueprint/AnimBlueprint sidecars with:
+---
 
-- `SuperStruct` — parent class path. For game-native parents (e.g. `/Script/VRFramework.VRGunAnimInstance`)
-  the commandlet reparents to the base `UAnimInstance` (the game C++ module isn't in a stock engine).
-- `TargetSkeleton` — resolved skeleton package path (used by `UAnimBlueprintFactory`).
-- `IsAnimBlueprint`, `AnimGraphNodeOrder` — export order, used to resolve anim-graph `LinkID` → node.
-- `Functions[].Bytecode` — normalized Kismet opcode tree per function:
+## Release Automation & CI/CD
 
-  ```json
-  { "Opcode": "EX_FinalFunction", "Offset": 0,
-    "FunctionRef": "/Script/Engine.KismetMathLibrary:Multiply_FloatFloat",
-    "Parameters": [ { "Opcode": "EX_LocalVariable", "Offset": 9,
-                      "OperandName": "TriggerRatio", "OperandType": "FloatProperty" } ] }
-  ```
+UE4Decompiler features an end-to-end automated release pipeline:
 
-  Keys: `Opcode` (EExprToken), `Offset` (statement index), `OperandName`/`OperandType` (variable refs),
-  `FunctionRef` (resolved UFunction path), and nested expressions under their field name
-  (`Parameters`, `ObjectExpression`, `ReturnExpression`, …). Requires `provider.ReadScriptData=true`,
-  which `PakExtractor` enables automatically when blueprints are in scope.
+- **Changelog Generator**: Run `./scripts/generate-changelog.sh` to automatically parse git history into Conventional Commit categories (Features, Fixes, Performance, Refactoring, Docs).
+- **Release Automation**:
+  - Bash (macOS/Linux): `./scripts/release.sh [version] [--dry-run] [--all-platforms] [--no-build]`
+  - PowerShell (Windows): `.\scripts\release.ps1 [-Version <ver>] [-DryRun] [-AllPlatforms] [-NoBuild]`
+- **GitHub Actions (`release.yml`)**:
+  - Automatically triggered upon pushing tags matching `v*` (e.g., `git push origin v2.0.0`).
+  - Cross-compiles single-file CLI and GUI packages for **Windows x64**, **Linux x64**, **macOS Apple Silicon (arm64)**, and **macOS Intel (x64)**.
+  - Automatically calculates SHA-256 checksums, formats the release notes from git history, and publishes the release with binaries attached.
 
-> Note: cooked shipping packages are **unversioned**, so the engine version cannot be auto-detected
-> from the header (it reads back as the mount default). Always pass `--version` for these.
+---
 
-## Architecture
+## Repository Structure
 
 ```
-Program.cs            CLI (CommandLineParser) + pipeline + Spectre progress + summary
-Core/
-  PakExtractor        DefaultFileProvider mount, AES, glob enumeration
-  AssetParser         LoadPackage + export/import walk → ParsedAsset
-  AssetWriter         JSON model + FPackageFileSummary header writer
-Reconstructors/       Texture, Mesh, Material, Blueprint, Level (one class each)
-Output/
-  ProjectScaffold     extracts the REAL .uproject + Config/*.ini from the pak (patches
-                      .uproject for stock-editor opening: EngineAssociation->version, strips
-                      native modules, drops project plugins); generates stand-ins only if absent
-  ContentWriter       path mapping, reconstructor routing, manifest
-Utils/
-  VersionDetector     hint parse + package-version sniffing
-  AesKeyResolver      hex key + executable entropy-scan hook
+UE4Decompiler/
+├── src/
+│   ├── UE4Decompiler.Core/          # DecompilerService, Reconstructors, Writers, Containers, Services, MCP
+│   ├── UE4Decompiler.Cli/           # Spectre.Console CLI application & subcommands
+│   └── UE4Decompiler.Gui/           # Cross-platform Avalonia UI Desktop application
+├── tests/
+│   └── UE4Decompiler.Tests/         # Comprehensive xUnit test suite (100 tests)
+├── lib/                             # Direct CUE4Parse and native decoding assemblies
+├── docs/                            # Comprehensive documentation suite
+│   ├── getting-started.md           # Quickstart and setup guide
+│   ├── cli.md                       # Complete CLI reference and exit codes
+│   ├── gui.md                       # Desktop GUI walkthrough
+│   ├── mcp.md                       # Model Context Protocol (MCP) AI integration guide
+│   ├── ue4-support.md               # UE4 capabilities and uncooked package writer
+│   ├── ue5-support.md               # UE5 IoStore, Zen format, and JSON IR pipeline
+│   ├── mappings.md                  # .usmap unversioned property mapping guide
+│   ├── blueprints.md                # Blueprint Kismet bytecode decompilation
+│   ├── assets.md                    # Supported asset types and formats
+│   ├── recovery.md                  # Full recovery lifecycle
+│   ├── troubleshooting.md           # Common issues, FAQ, and solutions
+│   └── architecture/                # System architecture and security model
+├── scripts/                         # Build, test, changelog, and release automation scripts
+├── .github/workflows/               # GitHub Actions CI & multi-platform Release workflows
+├── CONTRIBUTING.md                  # Contribution guidelines
+├── CODE_OF_CONDUCT.md              # Contributor Covenant Code of Conduct
+└── SECURITY.md                      # Security vulnerability reporting policy
 ```
+
+---
+
+## Documentation
+
+For in-depth guides, see the [docs/](docs/) folder:
+- [Getting Started](docs/getting-started.md)
+- [CLI Reference](docs/cli.md)
+- [Model Context Protocol (MCP)](docs/mcp.md)
+- [Desktop GUI Guide](docs/gui.md)
+- [Unreal Engine 4 Support](docs/ue4-support.md)
+- [Unreal Engine 5 Support](docs/ue5-support.md)
+- [Property Mappings (.usmap)](docs/mappings.md)
+- [Blueprint Decompilation](docs/blueprints.md)
+- [Asset Formats](docs/assets.md)
+- [Troubleshooting & FAQ](docs/troubleshooting.md)
+- [System Architecture](docs/architecture/architecture.md)
+
+---
+
+## License & Disclaimer
+
+UE4Decompiler is released under the MIT License.
+
+*Disclaimer: This software is intended for modding, educational purposes, interoperability research, and recovering assets from projects you own or have permission to analyze. Always respect the intellectual property rights and End User License Agreements (EULA) of content creators.*

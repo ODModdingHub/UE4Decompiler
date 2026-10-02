@@ -1,0 +1,31 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:UE4Decompiler.Gui.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+             x:Class="UE4Decompiler.Gui.Views.SettingsView"
+             x:DataType="vm:SettingsViewModel">
+
+    <ScrollViewer>
+        <StackPanel Margin="30" Spacing="20" MaxWidth="700">
+            <Border Background="#252A30" CornerRadius="8" Padding="24">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="Decompiler Preferences" FontSize="18" FontWeight="Bold" />
+
+                    <!-- Threads -->
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Extraction Concurrency Threads:" FontSize="13" Foreground="#C0C0C0" />
+                        <NumericUpDown Value="{Binding Threads}" Minimum="1" Maximum="64" Width="140" HorizontalAlignment="Left" />
+                    </StackPanel>
+
+                    <!-- Cache -->
+                    <CheckBox IsChecked="{Binding EnableDiskCache}" Content="Enable Persistent Disk Cache for Incremental Recovery" />
+
+                    <!-- Dark Theme -->
+                    <CheckBox IsChecked="{Binding IsDarkTheme}" Content="Dark Mode Interface (Recommended)" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

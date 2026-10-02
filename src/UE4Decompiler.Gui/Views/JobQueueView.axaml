@@ -1,0 +1,47 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:UE4Decompiler.Gui.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+             x:Class="UE4Decompiler.Gui.Views.JobQueueView"
+             x:DataType="vm:JobQueueViewModel">
+
+    <Grid RowDefinitions="Auto, *" Margin="24">
+        <!-- Progress Header Card -->
+        <Border Grid.Row="0" Background="#252A30" CornerRadius="8" Padding="20" Margin="0,0,0,16">
+            <StackPanel Spacing="16">
+                <Grid ColumnDefinitions="*, Auto">
+                    <StackPanel Grid.Column="0" Spacing="4">
+                        <TextBlock Text="{Binding CurrentStage}" FontSize="18" FontWeight="Bold" Foreground="#4E9A06" />
+                        <TextBlock Text="{Binding CurrentAsset}" FontSize="12" Foreground="#A0A0A0" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                        <TextBlock Text="{Binding ElapsedTimeText}" FontSize="16" FontFamily="Consolas,Menlo,Monospace"
+                                   VerticalAlignment="Center" Foreground="#C0C0C0" />
+                        <Button Content="Cancel" Command="{Binding CancelCommand}"
+                                IsEnabled="{Binding IsRunning}" Background="#C62828" Foreground="White" />
+                    </StackPanel>
+                </Grid>
+
+                <ProgressBar Value="{Binding ProgressPercentage}" Minimum="0" Maximum="100" Height="10" />
+
+                <TextBlock Text="{Binding SummaryText}" FontSize="12" Foreground="#808080" />
+            </StackPanel>
+        </Border>
+
+        <!-- Log Drawer -->
+        <Border Grid.Row="1" Background="#1A1D21" CornerRadius="8" Padding="16">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="Execution Log" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+                <ListBox ItemsSource="{Binding LogEntries}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" FontFamily="Consolas,Menlo,Monospace" FontSize="11" Foreground="#98C379" />
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>
