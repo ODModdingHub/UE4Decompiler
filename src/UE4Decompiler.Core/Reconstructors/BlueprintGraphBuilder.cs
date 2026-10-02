@@ -3481,6 +3481,8 @@ public static class BlueprintGraphBuilder
             t.ColorStruct("LightColor", src.GetOrDefault("LightColor", new CUE4Parse.UE4.Objects.Core.Math.FColor(255, 255, 255, 255)));
             t.Bool("CastShadows", src.GetOrDefault("CastShadows", 1u) != 0);
         }
+        t.Float("IndirectLightingIntensity", src.GetOrDefault("IndirectLightingIntensity", 1.0f));
+        t.Float("VolumetricScatteringIntensity", src.GetOrDefault("VolumetricScatteringIntensity", 1.0f));
 
         if (src is CUE4Parse.UE4.Assets.Exports.Component.Lights.ULightComponent lc)
         {

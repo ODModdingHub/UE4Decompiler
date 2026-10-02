@@ -28,6 +28,7 @@ public sealed class ProjectScaffold
         Directory.CreateDirectory(_opts.OutputRoot);
         Directory.CreateDirectory(Path.Combine(_opts.OutputRoot, "Config"));
         Directory.CreateDirectory(_opts.ContentRoot);
+        Directory.CreateDirectory(Path.Combine(_opts.OutputRoot, "Scripts"));
 
         var realUproject = ExtractUProject();
         var realConfigs = ExtractConfigs();
@@ -40,6 +41,7 @@ public sealed class ProjectScaffold
             WriteDefaultEditor();
             WriteDefaultInput();
         }
+        WriteMasterPythonScript();
         Log.Information("Scaffolded project {Name} (engine {Assoc}) at {Root} [uproject={U}, configs={C}]",
             _opts.ProjectName, _opts.EngineAssociation, _opts.OutputRoot,
             realUproject ? "real" : "generated", realConfigs ? "real" : "generated");
@@ -210,6 +212,11 @@ public sealed class ProjectScaffold
             sb.AppendLine("r.Nanite=1");
             sb.AppendLine("r.Lumen.DiffuseIndirect.Allow=1");
         }
+        sb.AppendLine();
+        sb.AppendLine("[Plugins]");
+        sb.AppendLine("+EnabledPlugins=\"EnhancedInput\"");
+        sb.AppendLine("+EnabledPlugins=\"PythonScriptPlugin\"");
+        sb.AppendLine("+EnabledPlugins=\"EditorScriptingUtilities\"");
         Write("DefaultEngine.ini", sb.ToString());
     }
 
@@ -250,6 +257,62 @@ public sealed class ProjectScaffold
         sb.AppendLine();
         sb.AppendLine("[/Script/UnrealEd.EditorLoadingSavingSettings]");
         Write("DefaultEditor.ini", sb.ToString());
+    }
+
+    public void WriteDefaultGameplayTags(IEnumerable<string> tags)
+    {
+        var tagList = tags.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t).ToList();
+        if (tagList.Count == 0) return;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("[/Script/GameplayTags.GameplayTagsSettings]");
+        sb.AppendLine("ImportTagsFromConfig=True");
+        sb.AppendLine("WarnOnInvalidTags=True");
+        sb.AppendLine("FastReplication=True");
+        foreach (var tag in tagList)
+        {
+            sb.AppendLine($"+GameplayTagList=(Tag=\"{tag}\",DevComment=\"\")");
+        }
+        Write("DefaultGameplayTags.ini", sb.ToString());
+        Log.Information("Scaffolded DefaultGameplayTags.ini with {Count} discovered gameplay tag(s)", tagList.Count);
+    }
+
+    private void WriteMasterPythonScript()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine("# UE4Decompiler Master Batch Reconstruction Runner");
+        sb.AppendLine("# Executes all level and skeletal socket reconstruction scripts in batch.");
+        sb.AppendLine("# Run via Unreal Editor Output Log (Python):");
+        sb.AppendLine("#     py \"Scripts/ReconstructAllLevels.py\"");
+        sb.AppendLine("# ===========================================================================");
+        sb.AppendLine("import unreal, os");
+        sb.AppendLine();
+        sb.AppendLine("def run_all():");
+        sb.AppendLine("    proj_dir = unreal.SystemLibrary.get_project_directory()");
+        sb.AppendLine("    content_dir = os.path.join(proj_dir, 'Content')");
+        sb.AppendLine("    unreal.log(f'>>> [UE4Decompiler] Scanning {content_dir} for reconstruction scripts...')");
+        sb.AppendLine("    count = 0");
+        sb.AppendLine("    for root, dirs, files in os.walk(content_dir):");
+        sb.AppendLine("        for f in files:");
+        sb.AppendLine("            if f.endswith('_reconstruct.py') or f.endswith('_sockets.py'):");
+        sb.AppendLine("                path = os.path.join(root, f)");
+        sb.AppendLine("                unreal.log(f'>>> [UE4Decompiler] Running script: {f}...')");
+        sb.AppendLine("                try:");
+        sb.AppendLine("                    with open(path, 'r', encoding='utf-8') as sfile:");
+        sb.AppendLine("                        exec(sfile.read(), globals())");
+        sb.AppendLine("                    count += 1");
+        sb.AppendLine("                except Exception as ex:");
+        sb.AppendLine("                    unreal.log_warning(f'Error executing {f}: {ex}')");
+        sb.AppendLine("    unreal.log(f'>>> [UE4Decompiler] Batch reconstruction complete! Ran {count} script(s).')");
+        sb.AppendLine();
+        sb.AppendLine("if __name__ == '__main__':");
+        sb.AppendLine("    run_all()");
+
+        var scriptDir = Path.Combine(_opts.OutputRoot, "Scripts");
+        if (!Directory.Exists(scriptDir)) Directory.CreateDirectory(scriptDir);
+        var scriptPath = Path.Combine(scriptDir, "ReconstructAllLevels.py");
+        File.WriteAllText(scriptPath, sb.ToString(), Encoding.UTF8);
     }
 
     private void Write(string name, string content) =>

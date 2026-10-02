@@ -280,6 +280,75 @@ public sealed class McpToolRegistry
                     },
                     required = new[] { "containerPath", "mapPath" }
                 }
+            },
+            new()
+            {
+                Name = "ue_inspect_skeleton",
+                Description = "Inspect a USkeleton asset to extract bone hierarchy, bone count, reference transforms, and attached skeletal sockets.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        skeletonPath = new { type = "string", description = "Virtual asset package path of the skeleton (e.g. '/Game/Characters/Mannequin/Meshes/SK_Mannequin_Skeleton')." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "skeletonPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_animation",
+                Description = "Inspect a UAnimSequence or UAnimMontage asset to extract playback duration, sampled frame counts, rate scale, skeleton link, and anim notify markers.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        animPath = new { type = "string", description = "Virtual asset package path of the animation or montage (e.g. '/Game/Animations/Jump_Loop')." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "animPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_input",
+                Description = "Inspect an Enhanced Input asset (UInputAction or UInputMappingContext) to extract value types, triggers, modifiers, and key bindings.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        inputPath = new { type = "string", description = "Virtual asset package path of the input action or mapping context." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "inputPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_generate_level_script",
+                Description = "Generate an automated Unreal Engine Python script for a level (.umap) that recreates lights, fog, atmosphere, post-process volumes, and placed actor geometry in Unreal Editor.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        mapPath = new { type = "string", description = "Virtual asset package path of the map (e.g. '/Game/Maps/MainMap')." },
+                        outputScript = new { type = "string", description = "Destination Python script file path (.py)." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "mapPath", "outputScript" }
+                }
             }
         };
     }
@@ -1052,6 +1121,166 @@ public sealed class McpToolRegistry
                         Result = result.Note,
                         result.Fidelity,
                         LightingProfile = result.Model
+                    });
+                }
+
+                case "ue_inspect_skeleton":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var skelPath = arguments.GetProperty("skeletonPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = skelPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Skeleton '{skelPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse skeleton asset '{skelPath}'.", isError: true);
+
+                    var ar = new AnimationReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), "ue4d_mcp_skel_" + Guid.NewGuid().ToString("N"));
+                    var result = ar.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Skeleton = file.Path,
+                        Result = result.Note,
+                        result.Fidelity,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_animation":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var animPath = arguments.GetProperty("animPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = animPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Animation '{animPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse animation asset '{animPath}'.", isError: true);
+
+                    var ar = new AnimationReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), "ue4d_mcp_anim_" + Guid.NewGuid().ToString("N"));
+                    var result = ar.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Animation = file.Path,
+                        Result = result.Note,
+                        result.Fidelity,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_inspect_input":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var inputPath = arguments.GetProperty("inputPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE5_1;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = inputPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Input asset '{inputPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse input asset '{inputPath}'.", isError: true);
+
+                    var ir = new InputReconstructor();
+                    var tempOut = Path.Combine(Path.GetTempPath(), "ue4d_mcp_input_" + Guid.NewGuid().ToString("N"));
+                    var result = ir.Reconstruct(parsed, tempOut);
+
+                    return McpToolCallResult.Json(new
+                    {
+                        InputAsset = file.Path,
+                        Result = result.Note,
+                        result.Fidelity,
+                        Model = result.Model
+                    });
+                }
+
+                case "ue_generate_level_script":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var mapPath = arguments.GetProperty("mapPath").GetString()!;
+                    var outputScript = arguments.GetProperty("outputScript").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = mapPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".umap", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Map '{mapPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse map asset '{mapPath}'.", isError: true);
+
+                    var lr = new LevelReconstructor();
+                    var outNoExt = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outputScript))!, Path.GetFileNameWithoutExtension(outputScript));
+                    var result = lr.Reconstruct(parsed, outNoExt);
+
+                    var generatedPy = result.SidecarFiles.FirstOrDefault(s => s.EndsWith(".py", StringComparison.OrdinalIgnoreCase));
+                    if (generatedPy != null && generatedPy != outputScript && File.Exists(generatedPy))
+                    {
+                        File.Copy(generatedPy, outputScript, overwrite: true);
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Success = true,
+                        OutputScript = outputScript,
+                        Map = file.Path,
+                        Result = result.Note,
+                        result.Fidelity
                     });
                 }
 

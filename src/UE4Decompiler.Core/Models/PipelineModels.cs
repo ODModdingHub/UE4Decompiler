@@ -134,7 +134,7 @@ public sealed class ReconstructionResult
     public object? Model { get; init; }
 
     /// <summary>Extra files the reconstructor already wrote to disk (relative leaf names), for the manifest.</summary>
-    public List<string> SidecarFiles { get; } = new();
+    public List<string> SidecarFiles { get; init; } = new();
 
     public static ReconstructionResult Failed(string note) => new() { Fidelity = Fidelity.Failed, Note = note };
 }

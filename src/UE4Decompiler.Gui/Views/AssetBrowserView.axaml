@@ -18,15 +18,18 @@
 
                 <Grid ColumnDefinitions="*, Auto">
                     <!-- Quick Category Pills -->
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
-                        <Button Content="All" Command="{Binding SelectCategoryCommand}" CommandParameter="All" Padding="10,4" FontSize="11" />
-                        <Button Content="Blueprints" Command="{Binding SelectCategoryCommand}" CommandParameter="Blueprint" Padding="10,4" FontSize="11" />
-                        <Button Content="Static Meshes" Command="{Binding SelectCategoryCommand}" CommandParameter="StaticMesh" Padding="10,4" FontSize="11" />
-                        <Button Content="Skeletal Meshes" Command="{Binding SelectCategoryCommand}" CommandParameter="SkeletalMesh" Padding="10,4" FontSize="11" />
-                        <Button Content="Textures" Command="{Binding SelectCategoryCommand}" CommandParameter="Texture2D" Padding="10,4" FontSize="11" />
-                        <Button Content="Materials" Command="{Binding SelectCategoryCommand}" CommandParameter="Material" Padding="10,4" FontSize="11" />
-                        <Button Content="Lighting &amp; Maps" Command="{Binding SelectCategoryCommand}" CommandParameter="World" Padding="10,4" FontSize="11" />
-                        <Button Content="Audio" Command="{Binding SelectCategoryCommand}" CommandParameter="SoundWave" Padding="10,4" FontSize="11" />
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="5">
+                        <Button Content="All" Command="{Binding SelectCategoryCommand}" CommandParameter="All" Padding="8,4" FontSize="11" />
+                        <Button Content="Blueprints" Command="{Binding SelectCategoryCommand}" CommandParameter="Blueprint" Padding="8,4" FontSize="11" />
+                        <Button Content="Static Meshes" Command="{Binding SelectCategoryCommand}" CommandParameter="StaticMesh" Padding="8,4" FontSize="11" />
+                        <Button Content="Skeletal Meshes" Command="{Binding SelectCategoryCommand}" CommandParameter="SkeletalMesh" Padding="8,4" FontSize="11" />
+                        <Button Content="Textures" Command="{Binding SelectCategoryCommand}" CommandParameter="Texture2D" Padding="8,4" FontSize="11" />
+                        <Button Content="Materials" Command="{Binding SelectCategoryCommand}" CommandParameter="Material" Padding="8,4" FontSize="11" />
+                        <Button Content="Lighting &amp; Maps" Command="{Binding SelectCategoryCommand}" CommandParameter="World" Padding="8,4" FontSize="11" />
+                        <Button Content="Audio" Command="{Binding SelectCategoryCommand}" CommandParameter="SoundWave" Padding="8,4" FontSize="11" />
+                        <Button Content="Data &amp; Tables" Command="{Binding SelectCategoryCommand}" CommandParameter="DataTable" Padding="8,4" FontSize="11" />
+                        <Button Content="Animations" Command="{Binding SelectCategoryCommand}" CommandParameter="AnimSequence" Padding="8,4" FontSize="11" />
+                        <Button Content="Input" Command="{Binding SelectCategoryCommand}" CommandParameter="InputAction" Padding="8,4" FontSize="11" />
                     </StackPanel>
 
                     <!-- Filter Stats -->

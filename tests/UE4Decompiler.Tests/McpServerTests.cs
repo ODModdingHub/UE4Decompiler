@@ -16,7 +16,7 @@ public class McpServerTests
 
         Assert.NotEmpty(tools);
         var toolNames = tools.Select(t => t.Name).ToHashSet();
-        Assert.Equal(15, toolNames.Count);
+        Assert.Equal(19, toolNames.Count);
         Assert.Contains("ue_inspect", toolNames);
         Assert.Contains("ue_scan", toolNames);
         Assert.Contains("ue_search_assets", toolNames);
@@ -32,6 +32,10 @@ public class McpServerTests
         Assert.Contains("ue_inspect_asset", toolNames);
         Assert.Contains("ue_export_asset", toolNames);
         Assert.Contains("ue_extract_lighting", toolNames);
+        Assert.Contains("ue_inspect_skeleton", toolNames);
+        Assert.Contains("ue_inspect_animation", toolNames);
+        Assert.Contains("ue_inspect_input", toolNames);
+        Assert.Contains("ue_generate_level_script", toolNames);
     }
 
     [Fact]

@@ -359,7 +359,14 @@ public static class LegacyHandler
                     });
                 });
 
-            if (!o.DryRun) writer.ScaffoldPlugins();
+            if (!o.DryRun)
+            {
+                writer.ScaffoldPlugins();
+                if (writer.DiscoveredGameplayTags.Count > 0)
+                {
+                    new ProjectScaffold(opts, extractor.Provider).WriteDefaultGameplayTags(writer.DiscoveredGameplayTags.Keys);
+                }
+            }
 
             if (emitStubs && !o.DryRun)
                 new StubModuleGenerator(o.SdkDump).Generate(opts.OutputRoot, writer.GameStubs.Values.ToList(), writer.StubBaseHints);

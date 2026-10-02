@@ -244,6 +244,10 @@ public sealed class DecompilerService : IDecompilerService
             if (!resolvedOptions.DryRun)
             {
                 writer.ScaffoldPlugins();
+                if (writer.DiscoveredGameplayTags.Count > 0)
+                {
+                    new Output.ProjectScaffold(resolvedOptions, extractor.Provider).WriteDefaultGameplayTags(writer.DiscoveredGameplayTags.Keys);
+                }
                 if (resolvedOptions.EmitStubs)
                 {
                     new StubModuleGenerator(null).Generate(resolvedOptions.OutputRoot, writer.GameStubs.Values.ToList(), writer.StubBaseHints);
@@ -323,9 +327,12 @@ public sealed class DecompilerService : IDecompilerService
             new("USkeletalMesh", AssetRecoveryCapability.Recovered, "Decoded to glTF 2.0 (.glb) with bones, weights, and morph targets", ".glb, .json"),
             new("UTexture2D / UTextureCube", AssetRecoveryCapability.Recovered, "Decoded to PNG; uncooked package writer for editor textures", ".png, .uasset, .json"),
             new("UMaterial / UMaterialInstanceConstant", AssetRecoveryCapability.PartiallyRecovered, "Full expression tree and parameter graph in JSON IR; HLSL shader export", ".json, .hlsl, .uasset"),
-            new("UWorld / ULevel", AssetRecoveryCapability.Recovered, "Placed actor transforms and component references extracted; template synthesis", ".umap, .json"),
-            new("USoundWave", AssetRecoveryCapability.Recovered, "Preserves audio stream bulk data and formats", ".wav, .ogg, .json"),
-            new("UDataTable / UStringTable", AssetRecoveryCapability.Recovered, "Decodes rows and tables to JSON and CSV", ".json, .csv"),
+            new("UWorld / ULevel Lighting & Rig", AssetRecoveryCapability.Recovered, "Full environmental lighting (Sun, Sky, Lights, Volumetric Fog, Atmosphere, PostProcess) + Unreal Editor Python rebuild script", ".umap, .json, _reconstruct.py, _lighting.json"),
+            new("USoundWave / USoundCue", AssetRecoveryCapability.Recovered, "Decompresses cooked ADPCM/Vorbis/PCM streams directly to playable audio files", ".wav, .ogg, .json"),
+            new("UDataTable / UStringTable / UCurveTable", AssetRecoveryCapability.Recovered, "Decodes rows and tables to editor-compliant RFC4180 CSV and JSON with FTableRowBase C++ stubs", ".csv, .json"),
+            new("USkeleton / UAnimSequence / UAnimMontage", AssetRecoveryCapability.Recovered, "Bone hierarchies, sockets, anim notify timelines, montage sections, and editor Python socket setup scripts", ".json, _sockets.py"),
+            new("UInputAction / UInputMappingContext", AssetRecoveryCapability.Recovered, "Enhanced Input axis types, player mappable settings, triggers, modifiers, and key bindings", ".json, _setup.py"),
+            new("Gameplay Tags & Project Config", AssetRecoveryCapability.Recovered, "Harvests all discovered GameplayTags into DefaultGameplayTags.ini, configures EnhancedInput & Python plugins", ".ini, .py"),
             new("Game Native C++ Stubs", AssetRecoveryCapability.Recovered, "Generates compilable C++ modules (.Build.cs, .h, .cpp) for referenced game classes", ".h, .cpp, .cs")
         };
 

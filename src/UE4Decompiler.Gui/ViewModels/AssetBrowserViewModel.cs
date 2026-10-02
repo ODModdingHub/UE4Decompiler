@@ -100,7 +100,13 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
         "Texture2D",
         "Material",
         "World",
-        "SoundWave"
+        "SoundWave",
+        "DataTable",
+        "StringTable",
+        "Skeleton",
+        "AnimSequence",
+        "InputAction",
+        "InputMappingContext"
     };
 
     public ObservableCollection<DiscoveredAsset> FilteredAssets { get; } = new();
@@ -533,6 +539,13 @@ public sealed partial class AssetBrowserViewModel : ViewModelBase
     {
         if (a.IsMap) return "World Map";
         var vp = a.VirtualPath;
+        if (vp.Contains("DataTable", StringComparison.OrdinalIgnoreCase) || vp.Contains("/DT_", StringComparison.OrdinalIgnoreCase)) return "DataTable";
+        if (vp.Contains("StringTable", StringComparison.OrdinalIgnoreCase) || vp.Contains("/ST_", StringComparison.OrdinalIgnoreCase)) return "StringTable";
+        if (vp.Contains("Curve", StringComparison.OrdinalIgnoreCase)) return "Curve";
+        if (vp.Contains("Skeleton", StringComparison.OrdinalIgnoreCase) || vp.Contains("/SK_", StringComparison.OrdinalIgnoreCase)) return "Skeleton";
+        if (vp.Contains("AnimSequence", StringComparison.OrdinalIgnoreCase) || vp.Contains("/AS_", StringComparison.OrdinalIgnoreCase) || vp.Contains("Montage", StringComparison.OrdinalIgnoreCase)) return "AnimSequence";
+        if (vp.Contains("InputAction", StringComparison.OrdinalIgnoreCase) || vp.Contains("/IA_", StringComparison.OrdinalIgnoreCase)) return "InputAction";
+        if (vp.Contains("InputMappingContext", StringComparison.OrdinalIgnoreCase) || vp.Contains("/IMC_", StringComparison.OrdinalIgnoreCase)) return "InputMappingContext";
         if (vp.Contains("Texture", StringComparison.OrdinalIgnoreCase) || a.Extension.Equals("png", StringComparison.OrdinalIgnoreCase)) return "Texture2D";
         if (vp.Contains("Material", StringComparison.OrdinalIgnoreCase)) return "Material";
         if (vp.Contains("SkeletalMesh", StringComparison.OrdinalIgnoreCase)) return "SkeletalMesh";

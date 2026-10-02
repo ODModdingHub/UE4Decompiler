@@ -33,9 +33,14 @@ public sealed class ContentWriter
     private readonly StringTableReconstructor _stringTable = new();
     private readonly CurveReconstructor _curve = new();
     private readonly AudioReconstructor _audio = new();
+    private readonly InputReconstructor _input = new();
+    private readonly AnimationReconstructor _anim = new();
 
     public List<ManifestEntry> Manifest { get; } = new();
     private readonly object _manifestLock = new();   // pipeline runs Process in parallel
+
+    /// <summary>GameplayTags discovered across all packages during processing, for DefaultGameplayTags.ini scaffolding.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, byte> DiscoveredGameplayTags { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Game-module types referenced by imports, keyed "Module.Name" — for stub generation.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, GameStub> GameStubs { get; } = new();
@@ -194,6 +199,42 @@ public sealed class ContentWriter
             {
                 var super = s.SuperStruct.ResolvedObject;
                 AddGameStub(super, InferEngineBase(super));          // cooked BGC/native parent
+            }
+        }
+    }
+
+    private void CollectGameplayTags(ParsedAsset asset)
+    {
+        foreach (var e in asset.Exports)
+        {
+            if (e.Properties == null) continue;
+            foreach (var prop in e.Properties)
+            {
+                try
+                {
+                    var val = prop.Tag?.GenericValue;
+                    if (val is CUE4Parse.UE4.Assets.Objects.FStructFallback fb)
+                    {
+                        var tName = fb.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("TagName").Text;
+                        if (!string.IsNullOrEmpty(tName) && tName != "None")
+                            DiscoveredGameplayTags.TryAdd(tName, 0);
+
+                        var tags = fb.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName[]>("GameplayTags");
+                        if (tags != null)
+                        {
+                            foreach (var t in tags)
+                                if (!string.IsNullOrEmpty(t.Text) && t.Text != "None")
+                                    DiscoveredGameplayTags.TryAdd(t.Text, 0);
+                        }
+                    }
+                    else if (val is CUE4Parse.UE4.Objects.UObject.FName fn && prop.Name.Text.Contains("Tag", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var t = fn.Text;
+                        if (!string.IsNullOrEmpty(t) && t != "None" && t.Contains('.'))
+                            DiscoveredGameplayTags.TryAdd(t, 0);
+                    }
+                }
+                catch { }
             }
         }
     }
@@ -638,6 +679,7 @@ public sealed class ContentWriter
         }
 
         CollectGameTypes(asset); // gather game-class refs for --emit-stubs (uniform: Zen + legacy)
+        CollectGameplayTags(asset); // gather gameplay tags for DefaultGameplayTags.ini
 
         if (_opts.DryRun)
         {
@@ -830,6 +872,16 @@ public sealed class ContentWriter
         {
             // sound wave written
         }
+        else if (asset.PrimaryType is "InputAction" or "InputMappingContext"
+                 && TryWriteInput(asset, outputAsset, packageName, entry))
+        {
+            // enhanced input written
+        }
+        else if (asset.PrimaryType is "Skeleton" or "AnimSequence" or "AnimMontage" or "BlendSpace" or "BlendSpace1D" or "PhysicsAsset"
+                 && TryWriteAnimation(asset, outputAsset, packageName, entry))
+        {
+            // animation / skeleton / physics written
+        }
         else if (!TryWriteUncooked(asset, outputAsset, entry))
             // No editor-loadable form for this type. Do NOT write a stub header: a half-formed .uasset reads as
             // "unrecognizable data" and CRASHES the editor when a map references it, whereas simply omitting the
@@ -952,6 +1004,42 @@ public sealed class ContentWriter
         catch (Exception ex)
         {
             Log.Warning(ex, "Audio processing failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteInput(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "enhanced input asset recovered"
+                                                          : entry.Note + "; enhanced input asset recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteInput failed for {Path}", asset.File.Path);
+            return false;
+        }
+    }
+
+    private bool TryWriteAnimation(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (asset.Package is Package pkg && UncookedPackageWriter.IsPackageEligible(pkg))
+                TryWriteUncooked(asset, outputAsset, entry);
+
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? $"{asset.PrimaryType} asset recovered"
+                                                          : entry.Note + $"; {asset.PrimaryType} asset recovered";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "TryWriteAnimation failed for {Path}", asset.File.Path);
             return false;
         }
     }
@@ -2187,6 +2275,8 @@ public sealed class ContentWriter
             "DataTable" or "CompositeDataTable" => _dataTable.Reconstruct(asset, outputNoExt),
             "StringTable" => _stringTable.Reconstruct(asset, outputNoExt),
             "CurveFloat" or "CurveVector" or "CurveLinearColor" or "CurveTable" => _curve.Reconstruct(asset, outputNoExt),
+            "InputAction" or "InputMappingContext" => _input.Reconstruct(asset, outputNoExt),
+            "Skeleton" or "AnimSequence" or "AnimMontage" or "BlendSpace" or "BlendSpace1D" or "PhysicsAsset" => _anim.Reconstruct(asset, outputNoExt),
             _ => Generic(asset)
         };
     }
