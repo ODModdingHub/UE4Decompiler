@@ -16,7 +16,7 @@ public class McpServerTests
 
         Assert.NotEmpty(tools);
         var toolNames = tools.Select(t => t.Name).ToHashSet();
-        Assert.Equal(12, toolNames.Count);
+        Assert.Equal(15, toolNames.Count);
         Assert.Contains("ue_inspect", toolNames);
         Assert.Contains("ue_scan", toolNames);
         Assert.Contains("ue_search_assets", toolNames);
@@ -29,6 +29,9 @@ public class McpServerTests
         Assert.Contains("ue_extract_metadata", toolNames);
         Assert.Contains("ue_generate_cpp_headers", toolNames);
         Assert.Contains("ue_iostore_info", toolNames);
+        Assert.Contains("ue_inspect_asset", toolNames);
+        Assert.Contains("ue_export_asset", toolNames);
+        Assert.Contains("ue_extract_lighting", toolNames);
     }
 
     [Fact]
@@ -145,5 +148,64 @@ public class McpServerTests
         Assert.NotEmpty(output);
         Assert.Contains("\"id\":10", output);
         Assert.Contains("\"result\":{}", output);
+    }
+
+    [Fact]
+    public async Task McpServer_ToolCall_InspectAsset_HandlesMissing()
+    {
+        var server = new McpServer();
+        var requestParams = JsonSerializer.Deserialize<JsonElement>("{\"name\":\"ue_inspect_asset\",\"arguments\":{\"containerPath\":\"/tmp/nonexistent.pak\",\"assetPath\":\"/Game/Maps/Fake\"}}");
+        var request = new JsonRpcRequest
+        {
+            Id = 5,
+            Method = "tools/call",
+            Params = requestParams
+        };
+
+        var response = await server.ProcessRequestAsync(request);
+        Assert.NotNull(response);
+        var result = Assert.IsType<McpToolCallResult>(response.Result);
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task McpServer_ToolCall_ExtractLighting_HandlesMissing()
+    {
+        var server = new McpServer();
+        var requestParams = JsonSerializer.Deserialize<JsonElement>("{\"name\":\"ue_extract_lighting\",\"arguments\":{\"containerPath\":\"/tmp/nonexistent.pak\",\"mapPath\":\"/Game/Maps/Fake\"}}");
+        var request = new JsonRpcRequest
+        {
+            Id = 6,
+            Method = "tools/call",
+            Params = requestParams
+        };
+
+        var response = await server.ProcessRequestAsync(request);
+        Assert.NotNull(response);
+        var result = Assert.IsType<McpToolCallResult>(response.Result);
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public void LightingComponents_PreserveTheirExactClassInSynthGraph()
+    {
+        var components = new[]
+        {
+            "PointLightComponent",
+            "SpotLightComponent",
+            "DirectionalLightComponent",
+            "SkyLightComponent",
+            "RectLightComponent",
+            "ExponentialHeightFogComponent",
+            "SkyAtmosphereComponent",
+            "VolumetricCloudComponent",
+            "PostProcessComponent"
+        };
+
+        foreach (var comp in components)
+        {
+            var normalized = UE4Decompiler.Reconstructors.BlueprintGraphBuilder.NormalizeSynthComponentClass(comp, false);
+            Assert.Equal(comp, normalized);
+        }
     }
 }

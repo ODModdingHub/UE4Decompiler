@@ -184,6 +184,36 @@ Return the complete Unreal Engine version (UE 4.18 through UE 5.5) and asset for
 
 - **Parameters:** None.
 
+### `ue_inspect_asset`
+Deeply inspect a single asset package inside a container, returning properties, exports, dependencies, lighting parameters, and material shader bindings.
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to container (.pak, .utoc) or paks folder.
+  - `assetPath` (string, required): Virtual asset package path (e.g. `/Game/Maps/MainMap` or `/Game/Materials/M_Metal`).
+  - `aesKey` (string, optional): AES key.
+  - `engineVersion` (string, optional): Engine version hint (e.g. `4.27`, `5.1`, `5.4`, `5.5`).
+
+### `ue_export_asset`
+Directly export a single asset package from a container to disk (glTF 2.0 for meshes, PNG for textures, WAV/OGG for audio, or raw JSON).
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to container (.pak, .utoc) or paks folder.
+  - `assetPath` (string, required): Virtual asset package path to export.
+  - `outputFile` (string, required): Destination file path on disk.
+  - `format` (string, optional): Export format (`auto`, `gltf`, `png`, `wav`, `cpp`, `uasset`). Default: `auto`.
+  - `aesKey` (string, optional): AES key.
+  - `engineVersion` (string, optional): Engine version hint.
+
+### `ue_extract_lighting`
+Extract all lighting actors, sky atmosphere, volumetric fog, clouds, post process settings, and built lighting data from a level map into structured JSON.
+
+- **Parameters:**
+  - `containerPath` (string, required): Path to container (.pak, .utoc) or paks folder.
+  - `mapPath` (string, required): Virtual asset package path of the map (e.g. `/Game/Maps/Arena01`).
+  - `outputJson` (string, optional): Output file path to write the lighting summary JSON.
+  - `aesKey` (string, optional): AES key.
+  - `engineVersion` (string, optional): Engine version hint.
+
 ---
 
 ## 4. Example Interaction Prompt

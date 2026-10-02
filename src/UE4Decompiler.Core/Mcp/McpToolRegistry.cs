@@ -12,6 +12,7 @@ using UE4Decompiler.Core.Services;
 using UE4Decompiler.Core.Utils;
 using UE4Decompiler.Output;
 using UE4Decompiler.Output.Stubs;
+using UE4Decompiler.Reconstructors;
 using UE4Decompiler.Utils;
 
 namespace UE4Decompiler.Core.Mcp;
@@ -220,6 +221,60 @@ public sealed class McpToolRegistry
                 {
                     type = "object",
                     properties = new { }
+                }
+            },
+            new()
+            {
+                Name = "ue_inspect_asset",
+                Description = "Deeply inspect a single asset package inside a container, returning properties, exports, dependencies, lighting parameters, and material shader bindings.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        assetPath = new { type = "string", description = "Virtual asset package path (e.g. '/Game/Maps/MainMap' or '/Game/Materials/M_Metal')." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint (e.g. '4.27', '5.1', '5.4', '5.5')." }
+                    },
+                    required = new[] { "containerPath", "assetPath" }
+                }
+            },
+            new()
+            {
+                Name = "ue_export_asset",
+                Description = "Directly export a single asset package from a container to disk (glTF 2.0 for meshes, PNG for textures, WAV/OGG for audio, or raw JSON).",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        assetPath = new { type = "string", description = "Virtual asset package path to export." },
+                        outputFile = new { type = "string", description = "Destination file path on disk." },
+                        format = new { type = "string", @enum = new[] { "auto", "gltf", "png", "wav", "cpp", "uasset" }, description = "Export format. Default: 'auto'." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "assetPath", "outputFile" }
+                }
+            },
+            new()
+            {
+                Name = "ue_extract_lighting",
+                Description = "Extract all lighting actors, sky atmosphere, volumetric fog, clouds, post process settings, and built lighting data from a level map into structured JSON.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        containerPath = new { type = "string", description = "Path to the container or game directory." },
+                        mapPath = new { type = "string", description = "Virtual asset package path of the map (e.g. '/Game/Maps/Arena01')." },
+                        outputJson = new { type = "string", description = "Optional output file path to write the lighting summary JSON." },
+                        aesKey = new { type = "string", description = "Optional AES decryption key." },
+                        engineVersion = new { type = "string", description = "Optional engine version hint." }
+                    },
+                    required = new[] { "containerPath", "mapPath" }
                 }
             }
         };
@@ -736,6 +791,202 @@ public sealed class McpToolRegistry
                 {
                     var matrix = _decompilerService.GetCapabilities();
                     return McpToolCallResult.Json(matrix);
+                }
+
+                case "ue_inspect_asset":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var assetPath = arguments.GetProperty("assetPath").GetString()!;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = assetPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".umap", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Asset '{assetPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse asset '{assetPath}'.", isError: true);
+
+                    var exports = parsed.Exports.Select(e => new { e.ExportType, e.Name }).ToList();
+                    var isMap = file.Extension.Equals("umap", StringComparison.OrdinalIgnoreCase) || parsed.Exports.Any(e => e.ExportType is "World" or "Level");
+
+                    if (isMap)
+                    {
+                        var lr = new LevelReconstructor();
+                        var res = lr.Reconstruct(parsed, Path.GetFileNameWithoutExtension(file.Path));
+                        return McpToolCallResult.Json(new
+                        {
+                            VirtualPath = file.Path,
+                            parsed.PrimaryType,
+                            file.Size,
+                            ExportCount = exports.Count,
+                            Exports = exports,
+                            IsMap = true,
+                            LevelModel = res.Model
+                        });
+                    }
+
+                    var matParams = new Dictionary<string, object>();
+                    var primaryExp = parsed.Exports.FirstOrDefault();
+                    if (primaryExp != null)
+                    {
+                        var svs = primaryExp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("ScalarParameterValues");
+                        if (svs != null)
+                        {
+                            var scalars = new Dictionary<string, float>();
+                            foreach (var s in svs)
+                            {
+                                var n = s.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "Param";
+                                scalars[n] = s.GetOrDefault<float>("ParameterValue");
+                            }
+                            matParams["Scalars"] = scalars;
+                        }
+
+                        var vvs = primaryExp.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback[]>("VectorParameterValues");
+                        if (vvs != null)
+                        {
+                            var vectors = new Dictionary<string, string>();
+                            foreach (var v in vvs)
+                            {
+                                var n = v.GetOrDefault<CUE4Parse.UE4.Assets.Objects.FStructFallback>("ParameterInfo")?.GetOrDefault<CUE4Parse.UE4.Objects.UObject.FName>("Name").Text ?? "Param";
+                                var col = v.GetOrDefault<CUE4Parse.UE4.Objects.Core.Math.FLinearColor>("ParameterValue");
+                                vectors[n] = $"(R={col.R:F3}, G={col.G:F3}, B={col.B:F3}, A={col.A:F3})";
+                            }
+                            matParams["Vectors"] = vectors;
+                        }
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        VirtualPath = file.Path,
+                        parsed.PrimaryType,
+                        file.Size,
+                        ExportCount = exports.Count,
+                        Exports = exports,
+                        MaterialParameters = matParams.Count > 0 ? matParams : null,
+                        Properties = primaryExp?.Properties?.ToDictionary(p => p.Name.Text, p => p.Tag?.GenericValue?.ToString() ?? "null")
+                    });
+                }
+
+                case "ue_export_asset":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var assetPath = arguments.GetProperty("assetPath").GetString()!;
+                    var outputFile = arguments.GetProperty("outputFile").GetString()!;
+                    var format = arguments.TryGetProperty("format", out var fm) ? fm.GetString() ?? "auto" : "auto";
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = assetPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".uasset", StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".umap", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Asset '{assetPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse asset '{assetPath}'.", isError: true);
+
+                    var targetDir = Path.GetDirectoryName(Path.GetFullPath(outputFile))!;
+                    Directory.CreateDirectory(targetDir);
+
+                    if (parsed.Exports.OfType<UTexture2D>().FirstOrDefault() is { } tex && (format == "auto" || format == "png"))
+                    {
+                        var decoded = TextureDecoder.Decode(tex, ETexturePlatform.DesktopMobile);
+                        if (decoded != null)
+                        {
+                            using var bmp = TextureEncoder.ToSkBitmap(decoded);
+                            using var img = SKImage.FromBitmap(bmp);
+                            using var data = img.Encode(SKEncodedImageFormat.Png, 100);
+                            var outPng = outputFile.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? outputFile : outputFile + ".png";
+                            File.WriteAllBytes(outPng, data.ToArray());
+                            return McpToolCallResult.Json(new { Success = true, OutputPath = outPng, Format = "PNG Image", Size = data.Size });
+                        }
+                    }
+
+                    if (parsed.Exports.OfType<UStaticMesh>().FirstOrDefault() is { } sm && (format == "auto" || format == "gltf"))
+                    {
+                        var meshExp = new MeshExporter(sm, new ExporterOptions { MeshFormat = EMeshFormat.Gltf2 });
+                        if (meshExp.TryWriteToDir(new DirectoryInfo(targetDir), out _, out var saved))
+                        {
+                            return McpToolCallResult.Json(new { Success = true, OutputPath = saved, Format = "glTF 2.0 Mesh" });
+                        }
+                    }
+
+                    var jsonPath = outputFile.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? outputFile : outputFile + ".json";
+                    File.WriteAllText(jsonPath, JsonSerializer.Serialize(new
+                    {
+                        VirtualPath = file.Path,
+                        parsed.PrimaryType,
+                        Exports = parsed.Exports.Select(e => new { e.ExportType, e.Name })
+                    }, new JsonSerializerOptions { WriteIndented = true }));
+
+                    return McpToolCallResult.Json(new { Success = true, OutputPath = jsonPath, Format = "JSON IR" });
+                }
+
+                case "ue_extract_lighting":
+                {
+                    var container = arguments.GetProperty("containerPath").GetString()!;
+                    var mapPath = arguments.GetProperty("mapPath").GetString()!;
+                    var outputJson = arguments.TryGetProperty("outputJson", out var oj) ? oj.GetString() : null;
+                    var aes = arguments.TryGetProperty("aesKey", out var ak) ? ak.GetString() : null;
+                    var engine = arguments.TryGetProperty("engineVersion", out var ev) ? ev.GetString() : null;
+
+                    var game = VersionDetector.FromHint(engine) ?? EGame.GAME_UE4_27;
+                    var parsedAes = AesKeyResolver.FromHex(aes);
+
+                    using var extractor = new PakExtractor(container, game, parsedAes, readScriptData: true);
+                    var parser = new AssetParser(extractor.Provider);
+
+                    var normalized = mapPath.Replace('\\', '/').Trim('/');
+                    var file = extractor.Provider.Files.Values.FirstOrDefault(f =>
+                        f.Path.EndsWith(normalized, StringComparison.OrdinalIgnoreCase) ||
+                        f.Path.EndsWith(normalized + ".umap", StringComparison.OrdinalIgnoreCase));
+
+                    if (file == null)
+                        return McpToolCallResult.Text($"Map '{mapPath}' not found in container '{container}'.", isError: true);
+
+                    var parsed = parser.Parse(file);
+                    if (parsed == null)
+                        return McpToolCallResult.Text($"Failed to parse map asset '{mapPath}'.", isError: true);
+
+                    var lr = new LevelReconstructor();
+                    var result = lr.Reconstruct(parsed, Path.GetFileNameWithoutExtension(file.Path));
+
+                    if (!string.IsNullOrWhiteSpace(outputJson) && result.Model != null)
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputJson))!);
+                        File.WriteAllText(outputJson, JsonSerializer.Serialize(result.Model, new JsonSerializerOptions { WriteIndented = true }));
+                    }
+
+                    return McpToolCallResult.Json(new
+                    {
+                        Map = file.Path,
+                        Result = result.Note,
+                        result.Fidelity,
+                        LightingProfile = result.Model
+                    });
                 }
 
                 default:

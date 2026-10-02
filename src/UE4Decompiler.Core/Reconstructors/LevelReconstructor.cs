@@ -45,22 +45,38 @@ public sealed class LevelReconstructor
                         streaming.Add(sl.GetOrDefault<FSoftObjectPath>("WorldAsset").ToString() ?? sl.Name);
             }
 
+            var lightingActors = new List<object>();
+            foreach (var a in actors)
+            {
+                var cls = a.GetType().GetProperty("Class")?.GetValue(a)?.ToString() ?? "";
+                if (cls.Contains("Light", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Contains("Fog", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Contains("Atmosphere", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Contains("PostProcess", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Contains("Cloud", StringComparison.OrdinalIgnoreCase))
+                {
+                    lightingActors.Add(a);
+                }
+            }
+
             var model = new
             {
                 AssetType = "World",
                 asset.File.Path,
                 ActorCount = actors.Count,
+                LightingActorCount = lightingActors.Count,
+                LightingActors = lightingActors,
                 Actors = actors,
                 StreamingLevels = streaming
             };
 
-            Log.Information("Level {Name}: {Count} actor(s), {Streaming} streaming level ref(s)",
-                Path.GetFileName(asset.File.Path), actors.Count, streaming.Count);
+            Log.Information("Level {Name}: {Count} actor(s) ({Lights} lighting), {Streaming} streaming level ref(s)",
+                Path.GetFileName(asset.File.Path), actors.Count, lightingActors.Count, streaming.Count);
 
             return new ReconstructionResult
             {
                 Fidelity = Fidelity.Partial,
-                Note = $"{actors.Count} actors placed, {streaming.Count} streaming refs preserved",
+                Note = $"{actors.Count} actors placed ({lightingActors.Count} lighting), {streaming.Count} streaming refs preserved",
                 Model = model
             };
         }
@@ -75,11 +91,35 @@ public sealed class LevelReconstructor
         // The actor's transform lives on its RootComponent; capture both the actor's properties
         // and any component sub-objects we can resolve for placement fidelity.
         var components = new List<object>();
+        var seenCompNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. RootComponent
+        if (actor.GetOrDefault<FPackageIndex>("RootComponent") is { } rcIndex &&
+            rcIndex.TryLoad(out var rootComp) && rootComp is not null)
+        {
+            seenCompNames.Add(rootComp.Name);
+            components.Add(new { rootComp.Name, Class = rootComp.ExportType, IsRoot = true, Properties = rootComp.Properties });
+        }
+
+        // 2. BlueprintCreatedComponents
         if (actor.GetOrDefault<FPackageIndex[]>("BlueprintCreatedComponents") is { } bcc)
         {
             foreach (var c in bcc)
-                if (c.TryLoad(out var comp) && comp is not null)
-                    components.Add(new { comp.Name, Class = comp.ExportType, Properties = comp.Properties });
+            {
+                if (c.TryLoad(out var comp) && comp is not null && seenCompNames.Add(comp.Name))
+                    components.Add(new { comp.Name, Class = comp.ExportType, IsRoot = false, Properties = comp.Properties });
+            }
+        }
+
+        // 3. Known native light/scene/fog components
+        var candidateProps = new[] { "LightComponent", "SkyLightComponent", "Component", "PostProcessComponent" };
+        foreach (var p in candidateProps)
+        {
+            if (actor.GetOrDefault<FPackageIndex>(p) is { } pi &&
+                pi.TryLoad(out var sc) && sc is not null && seenCompNames.Add(sc.Name))
+            {
+                components.Add(new { sc.Name, Class = sc.ExportType, IsRoot = false, Properties = sc.Properties });
+            }
         }
 
         return new

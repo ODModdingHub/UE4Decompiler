@@ -347,8 +347,8 @@ public sealed class ContentWriter
         "AController" => 60,
         "APawn" => 55,
         "AGameModeBase" or "AGameStateBase" or "APlayerState" or "APlayerCameraManager" or "ALevelScriptActor" or "AHUD" => 50,
-        "AActor" or "AVolume" or "ASkyLight" or "ADirectionalLight" or "APointLight" or "ASpotLight" or "ARectLight" or "AExponentialHeightFog" or "ASkyAtmosphere" or "APostProcessVolume" => 40,
-        "UStaticMeshComponent" or "UPointLightComponent" or "USpotLightComponent" or "UDirectionalLightComponent" or "USkyLightComponent" or "URectLightComponent" or "UExponentialHeightFogComponent" or "USkyAtmosphereComponent" or "UPostProcessComponent" => 35,
+        "AActor" or "AVolume" or "ASkyLight" or "ADirectionalLight" or "APointLight" or "ASpotLight" or "ARectLight" or "AExponentialHeightFog" or "ASkyAtmosphere" or "AVolumetricCloud" or "APostProcessVolume" => 40,
+        "UStaticMeshComponent" or "UPointLightComponent" or "USpotLightComponent" or "UDirectionalLightComponent" or "USkyLightComponent" or "URectLightComponent" or "UExponentialHeightFogComponent" or "USkyAtmosphereComponent" or "UVolumetricCloudComponent" or "UPostProcessComponent" => 35,
         "USceneComponent" => 30,
         "UActorComponent" => 25,
         "UUserWidget" or "UAnimInstance" or "UGameInstance" or "USaveGame" or "UDataAsset" => 20,
@@ -382,6 +382,7 @@ public sealed class ContentWriter
         ["/Script/Engine.RectLightComponent"] = "URectLightComponent",
         ["/Script/Engine.ExponentialHeightFogComponent"] = "UExponentialHeightFogComponent",
         ["/Script/Engine.SkyAtmosphereComponent"] = "USkyAtmosphereComponent",
+        ["/Script/Engine.VolumetricCloudComponent"] = "UVolumetricCloudComponent",
         ["/Script/Engine.PostProcessComponent"] = "UPostProcessComponent",
         ["/Script/Engine.SkyLight"] = "ASkyLight",
         ["/Script/Engine.DirectionalLight"] = "ADirectionalLight",
@@ -390,6 +391,7 @@ public sealed class ContentWriter
         ["/Script/Engine.RectLight"] = "ARectLight",
         ["/Script/Engine.ExponentialHeightFog"] = "AExponentialHeightFog",
         ["/Script/Engine.SkyAtmosphere"] = "ASkyAtmosphere",
+        ["/Script/Engine.VolumetricCloud"] = "AVolumetricCloud",
         ["/Script/Engine.PostProcessVolume"] = "APostProcessVolume",
         ["/Script/Engine.GameInstance"] = "UGameInstance",
         ["/Script/Engine.GameUserSettings"] = "UGameUserSettings",
@@ -565,7 +567,7 @@ public sealed class ContentWriter
             "USceneComponent" or "UStaticMeshComponent" or "ULightComponent" or "UPointLightComponent" or
                 "USpotLightComponent" or "UDirectionalLightComponent" or "USkyLightComponent" or
                 "URectLightComponent" or "UExponentialHeightFogComponent" or "USkyAtmosphereComponent" or
-                "UPostProcessComponent" or "UTextRenderComponent" or "UPoseableMeshComponent" => "USceneComponent",
+                "UVolumetricCloudComponent" or "UPostProcessComponent" or "UTextRenderComponent" or "UPoseableMeshComponent" => "USceneComponent",
             "UActorComponent" or "UMovementComponent" => "UActorComponent",
             "UGameInstance" => "UGameInstance",
             "USaveGame" => "USaveGame",
@@ -799,6 +801,11 @@ public sealed class ContentWriter
         {
             // BP: reskinned from --bp-template (Zen-safe, browsable/openable) or reconstructed (legacy 4.21, open-safe).
         }
+        else if (asset.PrimaryType is "MapBuildDataRegistry"
+                 && TryWriteBuiltData(asset, outputAsset, packageName, entry))
+        {
+            // built lighting registry written
+        }
         else if (!TryWriteUncooked(asset, outputAsset, entry))
             // No editor-loadable form for this type. Do NOT write a stub header: a half-formed .uasset reads as
             // "unrecognizable data" and CRASHES the editor when a map references it, whereas simply omitting the
@@ -807,6 +814,23 @@ public sealed class ContentWriter
                                                           : entry.Note + "; skipped (no editor-loadable form)";
 
         return entry;
+    }
+
+    private bool TryWriteBuiltData(ParsedAsset asset, string outputAsset, string packageName, ManifestEntry entry)
+    {
+        try
+        {
+            if (!Writer.BuiltDataWriter.WriteBuiltDataPackage(asset, outputAsset, packageName, _opts.Game))
+                return false;
+            entry.Note = string.IsNullOrEmpty(entry.Note) ? "built lighting registry (*_BuiltData.uasset)"
+                                                          : entry.Note + "; built lighting registry (*_BuiltData.uasset)";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "BuiltData write failed for {Path}", asset.File.Path);
+            return false;
+        }
     }
 
     private static bool IsHlodOrSimplygonStandin(string path)

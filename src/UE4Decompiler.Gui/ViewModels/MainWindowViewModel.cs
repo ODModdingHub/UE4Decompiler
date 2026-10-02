@@ -27,7 +27,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         var clipboardService = new AvaloniaClipboardService();
 
         HomeVm = new HomeViewModel(service, this, fileDialogService);
-        AssetBrowserVm = new AssetBrowserViewModel(this, clipboardService);
+        AssetBrowserVm = new AssetBrowserViewModel(this, clipboardService, fileDialogService);
         GraphVm = new GraphViewModel(clipboardService, fileDialogService);
         JobQueueVm = new JobQueueViewModel(service);
         DoctorVm = new DoctorViewModel(service);

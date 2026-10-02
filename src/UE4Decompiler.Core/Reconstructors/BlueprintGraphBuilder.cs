@@ -3442,7 +3442,8 @@ public static class BlueprintGraphBuilder
 
     private static bool IsLightComponent(string cls) =>
         cls is "LightComponent" or "PointLightComponent" or "SpotLightComponent" or "RectLightComponent" or
-            "DirectionalLightComponent" or "SkyLightComponent" ||
+            "DirectionalLightComponent" or "SkyLightComponent" or "ExponentialHeightFogComponent" or
+            "SkyAtmosphereComponent" or "VolumetricCloudComponent" or "PostProcessComponent" ||
         cls.EndsWith("LightComponent", StringComparison.Ordinal);
 
     public static string NormalizeSynthComponentClass(string cls, bool hasStaticMesh)
@@ -3525,6 +3526,10 @@ public static class BlueprintGraphBuilder
         {
             t.Float("LightSourceAngle", dir.LightSourceAngle);
             t.Float("LightSourceSoftAngle", dir.LightSourceSoftAngle);
+            t.Bool("bUsedAsAtmosphereSunLight", src.GetOrDefault("bUsedAsAtmosphereSunLight", false));
+            t.Int("AtmosphereSunLightIndex", src.GetOrDefault("AtmosphereSunLightIndex", 0));
+            t.Bool("bCastVolumetricShadow", src.GetOrDefault("bCastVolumetricShadow", false));
+            t.Bool("bCastCloudShadows", src.GetOrDefault("bCastCloudShadows", false));
         }
 
         if (src.ExportType.Equals("SkyLightComponent", StringComparison.OrdinalIgnoreCase))
@@ -3545,6 +3550,32 @@ public static class BlueprintGraphBuilder
             t.Float("VolumetricFogScatteringDistribution", src.GetOrDefault("VolumetricFogScatteringDistribution", 0.2f));
             t.Float("VolumetricFogExtinctionScale", src.GetOrDefault("VolumetricFogExtinctionScale", 1.0f));
             t.Float("VolumetricFogDistance", src.GetOrDefault("VolumetricFogDistance", 6000.0f));
+        }
+
+        if (src.ExportType.Equals("SkyAtmosphereComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            t.Float("BottomRadius", src.GetOrDefault("BottomRadius", 6360.0f));
+            t.Float("AtmosphereHeight", src.GetOrDefault("AtmosphereHeight", 60.0f));
+            t.Float("MultiScatteringFactor", src.GetOrDefault("MultiScatteringFactor", 1.0f));
+            t.Float("RayleighScatteringScale", src.GetOrDefault("RayleighScatteringScale", 0.0331f));
+            t.Float("RayleighExponentialDistribution", src.GetOrDefault("RayleighExponentialDistribution", 8.0f));
+            t.Float("MieScatteringScale", src.GetOrDefault("MieScatteringScale", 0.003996f));
+            t.Float("MieAbsorptionScale", src.GetOrDefault("MieAbsorptionScale", 0.000444f));
+            t.Float("MieAnisotropy", src.GetOrDefault("MieAnisotropy", 0.8f));
+            t.Float("MieExponentialDistribution", src.GetOrDefault("MieExponentialDistribution", 1.2f));
+            t.Float("OtherAbsorptionScale", src.GetOrDefault("OtherAbsorptionScale", 0.000650f));
+            t.Float("AerialPerspectiveViewDistanceScale", src.GetOrDefault("AerialPerspectiveViewDistanceScale", 1.0f));
+            t.Float("HeightFogContribution", src.GetOrDefault("HeightFogContribution", 1.0f));
+        }
+
+        if (src.ExportType.Equals("VolumetricCloudComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            t.Float("LayerBottomAltitude", src.GetOrDefault("LayerBottomAltitude", 5.0f));
+            t.Float("LayerHeight", src.GetOrDefault("LayerHeight", 10.0f));
+            t.Float("TracingStartMaxDistance", src.GetOrDefault("TracingStartMaxDistance", 350.0f));
+            t.Float("TracingMaxDistance", src.GetOrDefault("TracingMaxDistance", 50.0f));
+            t.Float("PlanetRadius", src.GetOrDefault("PlanetRadius", 6360.0f));
+            t.Bool("bUsePerSampleAtmosphericLightTransmittance", src.GetOrDefault("bUsePerSampleAtmosphericLightTransmittance", true));
         }
 
         if (src.ExportType.Equals("PostProcessComponent", StringComparison.OrdinalIgnoreCase))

@@ -100,9 +100,19 @@
                                 HorizontalContentAlignment="Center"
                                 Padding="12,9" />
 
-                        <Grid ColumnDefinitions="*, 8, *">
-                            <Button Grid.Column="0" Content="Copy Path" Command="{Binding CopyPathCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Padding="10,7" />
-                            <Button Grid.Column="2" Content="Copy JSON" Command="{Binding CopyJsonCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Padding="10,7" />
+                        <Button Content="Export Asset..."
+                                Command="{Binding ExportAssetCommand}"
+                                Background="#10B981"
+                                Foreground="White"
+                                FontWeight="Bold"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Center"
+                                Padding="12,8" />
+
+                        <Grid ColumnDefinitions="*, 6, *, 6, *">
+                            <Button Grid.Column="0" Content="Copy Path" Command="{Binding CopyPathCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Padding="8,6" FontSize="11" />
+                            <Button Grid.Column="2" Content="Copy JSON" Command="{Binding CopyJsonCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Padding="8,6" FontSize="11" />
+                            <Button Grid.Column="4" Content="Copy C++" Command="{Binding CopyCppCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Padding="8,6" FontSize="11" />
                         </Grid>
 
                         <TextBlock Text="{Binding StatusMessage}" FontSize="11" Foreground="#64748B" TextWrapping="Wrap" Margin="0,4,0,0" />
@@ -143,14 +153,53 @@
                             </ScrollViewer>
                         </TabItem>
 
+                        <!-- Materials & Shaders Tab -->
+                        <TabItem Header="Materials">
+                            <ScrollViewer Margin="0,8,0,0">
+                                <Border Background="#1E222B" CornerRadius="4" Padding="10">
+                                    <SelectableTextBlock Text="{Binding SelectedMaterialParams}"
+                                                         FontFamily="Consolas,Menlo,Monospace"
+                                                         FontSize="11"
+                                                         Foreground="#34D399"
+                                                         LineHeight="18" />
+                                </Border>
+                            </ScrollViewer>
+                        </TabItem>
+
+                        <!-- C++ Header Tab -->
+                        <TabItem Header="C++ Header">
+                            <ScrollViewer Margin="0,8,0,0">
+                                <Border Background="#1E222B" CornerRadius="4" Padding="10">
+                                    <SelectableTextBlock Text="{Binding SelectedCppHeader}"
+                                                         FontFamily="Consolas,Menlo,Monospace"
+                                                         FontSize="11"
+                                                         Foreground="#FCD34D"
+                                                         LineHeight="18" />
+                                </Border>
+                            </ScrollViewer>
+                        </TabItem>
+
+                        <!-- Audio Tab -->
+                        <TabItem Header="Audio">
+                            <ScrollViewer Margin="0,8,0,0">
+                                <Border Background="#1E222B" CornerRadius="4" Padding="10">
+                                    <SelectableTextBlock Text="{Binding SelectedAudioInfo}"
+                                                         FontFamily="Consolas,Menlo,Monospace"
+                                                         FontSize="11"
+                                                         Foreground="#F472B6"
+                                                         LineHeight="18" />
+                                </Border>
+                            </ScrollViewer>
+                        </TabItem>
+
                         <!-- Raw JSON Tab -->
                         <TabItem Header="JSON">
                             <ScrollViewer Margin="0,8,0,0">
                                 <SelectableTextBlock Text="{Binding SelectedRawJson}"
-                                                     FontFamily="Consolas,Menlo,Monospace"
-                                                     FontSize="11"
-                                                     Foreground="#A78BFA"
-                                                     LineHeight="18" />
+                                                         FontFamily="Consolas,Menlo,Monospace"
+                                                         FontSize="11"
+                                                         Foreground="#A78BFA"
+                                                         LineHeight="18" />
                             </ScrollViewer>
                         </TabItem>
 

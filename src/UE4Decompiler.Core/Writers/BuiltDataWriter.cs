@@ -154,4 +154,41 @@ public static class BuiltDataWriter
         => CustomVer(s, ReflectionCaptureObjVerGuid) >= (int)FReflectionCaptureObjectVersion.Type.MoveReflectionCaptureDataToMapBuildData;
     public static bool FortniteGridDescSupport(FPackageFileSummary s)
         => CustomVer(s, FortniteMainObjVerGuid) >= (int)FFortniteMainBranchObjectVersion.Type.VolumetricLightMapGridDescSupport;
+
+    public static bool WriteBuiltDataPackage(UE4Decompiler.Core.ParsedAsset asset, string outFile, string packageName, EGame game)
+    {
+        var reg = asset.Exports.OfType<UMapBuildDataRegistry>().FirstOrDefault();
+        if (reg is null) return false;
+
+        var spw = new SynthPackageWriter(game >= EGame.GAME_UE5_0 ? game : EGame.GAME_UE4_21, packageName);
+        int enginePkg = spw.AddImport("/Script/CoreUObject", "Package", 0, "/Script/Engine");
+        int regClass = spw.AddImport("/Script/CoreUObject", "Class", enginePkg, "MapBuildDataRegistry");
+
+        // Serialize tagged properties (e.g. LevelLightingQuality)
+        using var ms = new MemoryStream();
+        using var aw = new FArchiveWriter(ms);
+        var tpw = new TaggedPropertyWriter(aw, spw.Name);
+        var quality = reg.GetOrDefault<object>("LevelLightingQuality");
+        if (quality != null)
+        {
+            var qStr = quality.ToString() ?? "Quality_Production";
+            if (!qStr.StartsWith("Quality_")) qStr = "Quality_" + qStr;
+            tpw.ByteEnum("LevelLightingQuality", "ELightingBuildQuality", qStr);
+        }
+        tpw.WriteNone();
+        var propBytes = ms.ToArray();
+
+        var (rov, refl, fortnite) = GatesForGame(game);
+        var nativeBytes = SerializeRegistryNative(reg, rov, refl, fortnite, _ => 0);
+
+        var fullPayload = new byte[propBytes.Length + nativeBytes.Length];
+        Buffer.BlockCopy(propBytes, 0, fullPayload, 0, propBytes.Length);
+        Buffer.BlockCopy(nativeBytes, 0, fullPayload, propBytes.Length, nativeBytes.Length);
+
+        var shortName = Path.GetFileNameWithoutExtension(outFile);
+        spw.AddExport(shortName, regClass, 0, 0, fullPayload, objectFlags: 0x1 | 0x2 | 0x8, templatePkgIndex: 0, isAsset: true);
+        spw.Write(outFile);
+        Log.Information("BuiltData registry {Short} -> {Out}", shortName, outFile);
+        return true;
+    }
 }
