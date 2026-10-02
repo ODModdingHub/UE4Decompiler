@@ -117,7 +117,10 @@ if [[ "$NO_BUILD" == false && "$DRY_RUN" == false ]]; then
         GUI_ARCHIVE="$RELEASES_DIR/UE4Decompiler-$TAG-$rid-gui"
 
         if [[ "$rid" == win* ]]; then
-            if command -v zip &>/dev/null; then
+            if command -v 7z &>/dev/null; then
+                (cd "$DIST_DIR/$rid/cli" && 7z a -r "$CLI_ARCHIVE.zip" . >/dev/null)
+                (cd "$DIST_DIR/$rid/gui" && 7z a -r "$GUI_ARCHIVE.zip" . >/dev/null)
+            elif command -v zip &>/dev/null; then
                 (cd "$DIST_DIR/$rid/cli" && zip -r -q "$CLI_ARCHIVE.zip" .)
                 (cd "$DIST_DIR/$rid/gui" && zip -r -q "$GUI_ARCHIVE.zip" .)
             fi

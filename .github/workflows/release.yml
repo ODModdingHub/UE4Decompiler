@@ -87,11 +87,14 @@ jobs:
 
           if [ "${{ matrix.archive_ext }}" = "zip" ]; then
             if command -v 7z &>/dev/null; then
-              (cd "dist/${{ matrix.rid }}/cli" && 7z a -r -q "../../packages/${CLI_NAME}.zip" .)
-              (cd "dist/${{ matrix.rid }}/gui" && 7z a -r -q "../../packages/${GUI_NAME}.zip" .)
+              (cd "dist/${{ matrix.rid }}/cli" && 7z a -r "../../packages/${CLI_NAME}.zip" . >/dev/null)
+              (cd "dist/${{ matrix.rid }}/gui" && 7z a -r "../../packages/${GUI_NAME}.zip" . >/dev/null)
             elif command -v zip &>/dev/null; then
               (cd "dist/${{ matrix.rid }}/cli" && zip -r -q "../../packages/${CLI_NAME}.zip" .)
               (cd "dist/${{ matrix.rid }}/gui" && zip -r -q "../../packages/${GUI_NAME}.zip" .)
+            elif command -v powershell &>/dev/null; then
+              powershell -NoProfile -Command "Compress-Archive -Path 'dist/${{ matrix.rid }}/cli/*' -DestinationPath 'dist/packages/${CLI_NAME}.zip' -Force"
+              powershell -NoProfile -Command "Compress-Archive -Path 'dist/${{ matrix.rid }}/gui/*' -DestinationPath 'dist/packages/${GUI_NAME}.zip' -Force"
             else
               tar -czf "dist/packages/${CLI_NAME}.tar.gz" -C "dist/${{ matrix.rid }}/cli" .
               tar -czf "dist/packages/${GUI_NAME}.tar.gz" -C "dist/${{ matrix.rid }}/gui" .
@@ -147,8 +150,7 @@ jobs:
 
       - name: Generate Changelog
         run: |
-          chmod +x scripts/generate-changelog.sh
-          ./scripts/generate-changelog.sh "$VERSION" RELEASE_NOTES.md
+          bash scripts/generate-changelog.sh "$VERSION" RELEASE_NOTES.md
           echo "==> Generated Release Notes:"
           cat RELEASE_NOTES.md
 
