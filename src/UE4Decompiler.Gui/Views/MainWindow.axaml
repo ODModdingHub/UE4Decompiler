@@ -7,7 +7,6 @@
         mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="700"
         x:Class="UE4Decompiler.Gui.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Icon="/Assets/avalonia-logo.ico"
         Title="UE4Decompiler - Unreal Engine Asset Recovery"
         Width="1140" Height="740"
         WindowStartupLocation="CenterScreen"
