@@ -3526,6 +3526,34 @@ public static class BlueprintGraphBuilder
             t.Float("LightSourceAngle", dir.LightSourceAngle);
             t.Float("LightSourceSoftAngle", dir.LightSourceSoftAngle);
         }
+
+        if (src.ExportType.Equals("SkyLightComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            t.Float("Intensity", src.GetOrDefault("Intensity", 1.0f));
+            t.Float("SkyDistanceThreshold", src.GetOrDefault("SkyDistanceThreshold", 150000.0f));
+            t.Bool("bCaptureEmissiveOnly", src.GetOrDefault("bCaptureEmissiveOnly", false));
+            t.Bool("bLowerHemisphereIsBlack", src.GetOrDefault("bLowerHemisphereIsBlack", false));
+        }
+
+        if (src.ExportType.Equals("ExponentialHeightFogComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            t.Float("FogDensity", src.GetOrDefault("FogDensity", 0.02f));
+            t.Float("FogHeightFalloff", src.GetOrDefault("FogHeightFalloff", 0.2f));
+            t.Float("FogMaxOpacity", src.GetOrDefault("FogMaxOpacity", 1.0f));
+            t.Float("StartDistance", src.GetOrDefault("StartDistance", 0.0f));
+            t.Bool("bEnableVolumetricFog", src.GetOrDefault("bEnableVolumetricFog", false));
+            t.Float("VolumetricFogScatteringDistribution", src.GetOrDefault("VolumetricFogScatteringDistribution", 0.2f));
+            t.Float("VolumetricFogExtinctionScale", src.GetOrDefault("VolumetricFogExtinctionScale", 1.0f));
+            t.Float("VolumetricFogDistance", src.GetOrDefault("VolumetricFogDistance", 6000.0f));
+        }
+
+        if (src.ExportType.Equals("PostProcessComponent", StringComparison.OrdinalIgnoreCase))
+        {
+            t.Float("Priority", src.GetOrDefault("Priority", 0.0f));
+            t.Float("BlendRadius", src.GetOrDefault("BlendRadius", 100.0f));
+            t.Float("BlendWeight", src.GetOrDefault("BlendWeight", 1.0f));
+            t.Bool("bUnbound", src.GetOrDefault("bUnbound", true));
+        }
     }
 
     private static float[] ReadVec(CUE4Parse.UE4.Assets.Exports.UObject obj, string prop, float dflt)
